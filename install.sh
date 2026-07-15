@@ -98,6 +98,7 @@ fi
 mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR"
 chmod 0750 "$DATA_DIR" "$CONFIG_DIR"
 chown frp-panel:frp-panel "$DATA_DIR"
+chown root:frp-panel "$CONFIG_DIR"
 
 CONFIG="$CONFIG_DIR/config.yaml"
 CREATED_PASSWORD=""
