@@ -6,13 +6,51 @@ INSTALL_DIR="${FRP_PANEL_INSTALL_DIR:-/opt/frp-panel}"
 DATA_DIR="${FRP_PANEL_DATA_DIR:-/var/lib/frp-panel}"
 CONFIG_DIR="${FRP_PANEL_CONFIG_DIR:-/etc/frp-panel}"
 SERVICE_NAME="frp-panel"
-MODE="install"
+MODE=""
+ASSUME_YES="0"
 
-case "${1:-}" in
-  --update) MODE="update" ;;
-  "") ;;
-  *) echo "Usage: install.sh [--update]" >&2; exit 2 ;;
-esac
+usage() {
+  echo "Usage: install.sh [--install|--update|--uninstall] [--yes]"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --install|install) MODE="install" ;;
+    --update|update) MODE="update" ;;
+    --uninstall|uninstall) MODE="uninstall" ;;
+    --yes|-y) ASSUME_YES="1" ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+show_menu() {
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    MODE="install"
+    return
+  fi
+
+  if [ -x "$INSTALL_DIR/frp-panel" ]; then
+    status="installed"
+  else
+    status="not installed"
+  fi
+
+  printf '\nFRP Panel Manager (%s)\n' "$status" > /dev/tty
+  printf '  1) Install\n  2) Update\n  3) Uninstall (keep config and data)\n  0) Exit\n' > /dev/tty
+  printf 'Select an operation [0-3]: ' > /dev/tty
+  IFS= read -r choice < /dev/tty || choice="0"
+  case "$choice" in
+    1) MODE="install" ;;
+    2) MODE="update" ;;
+    3) MODE="uninstall" ;;
+    0) echo "Cancelled."; exit 0 ;;
+    *) echo "Invalid selection." >&2; exit 2 ;;
+  esac
+}
+
+[ -n "$MODE" ] || show_menu
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Please run as root (for example: curl ... | sudo sh)." >&2
@@ -24,20 +62,71 @@ case "$(uname -s)" in
   *) echo "Only Linux is supported by this installer." >&2; exit 1 ;;
 esac
 
-case "$(uname -m)" in
-  x86_64|amd64) ARCH="amd64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
-  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   INIT="systemd"
 elif command -v rc-service >/dev/null 2>&1; then
   INIT="openrc"
 else
+  INIT="none"
+fi
+
+confirm_uninstall() {
+  [ "$ASSUME_YES" = "1" ] && return
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    echo "Uninstall requires an interactive confirmation or --yes." >&2
+    exit 1
+  fi
+  printf 'Remove FRP Panel services and binaries? Config and data will be kept. [y/N]: ' > /dev/tty
+  IFS= read -r answer < /dev/tty || answer=""
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) echo "Cancelled."; exit 0 ;;
+  esac
+}
+
+uninstall_panel() {
+  confirm_uninstall
+
+  if [ "$INIT" = "systemd" ] || [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  if [ "$INIT" = "openrc" ] || [ -f "/etc/init.d/$SERVICE_NAME" ]; then
+    rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+    rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
+    rm -f "/etc/init.d/$SERVICE_NAME"
+  fi
+
+  rm -f "$INSTALL_DIR/frp-panel" "$INSTALL_DIR"/frp-panel.backup.*
+  rmdir "$INSTALL_DIR" >/dev/null 2>&1 || true
+
+  echo "FRP Panel was uninstalled."
+  echo "Config kept at: $CONFIG_DIR"
+  echo "Data kept at:   $DATA_DIR"
+}
+
+if [ "$MODE" = "uninstall" ]; then
+  uninstall_panel
+  exit 0
+fi
+
+if [ "$MODE" = "update" ] && [ ! -x "$INSTALL_DIR/frp-panel" ]; then
+  echo "FRP Panel is not installed. Select Install first." >&2
+  exit 1
+fi
+
+if [ "$INIT" = "none" ]; then
   echo "Neither systemd nor OpenRC was detected." >&2
   exit 1
 fi
+
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
 
 TMP_DIR=$(mktemp -d)
 BACKUP=""
