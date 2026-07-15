@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/admin/package-lock.json
+            web/user/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.2"
+          cache: true
+
+      - name: Build frontend
+        run: |
+          npm ci --prefix web/admin
+          npm run build --prefix web/admin
+          npm ci --prefix web/user
+          npm run build --prefix web/user
+          mkdir -p internal/api/dist/{landing,admin,user,license} internal/api/bin release
+          cp web/landing/index.html internal/api/dist/landing/index.html
+          cp -r web/admin/dist/. internal/api/dist/admin/
+          cp -r web/user/dist/. internal/api/dist/user/
+          cp web/license/index.html internal/api/dist/license/index.html
+
+      - name: Build Linux binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+        run: |
+          for arch in amd64 arm64; do
+            GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o internal/api/bin/agent ./cmd/agent/
+            GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "release/frp-panel-linux-$arch" ./cmd/panel/
+          done
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            printf '%s\n' "$GITHUB_REF_NAME" > release/version.txt
+          else
+            printf 'dev-%s\n' "$GITHUB_SHA" > release/version.txt
+          fi
+          cd release
+          sha256sum frp-panel-linux-* version.txt > checksums.txt
+
+      - name: Test
+        run: go test ./...
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/frp-panel-linux-amd64
+            release/frp-panel-linux-arm64
+            release/version.txt
+            release/checksums.txt

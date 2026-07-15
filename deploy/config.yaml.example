@@ -1,0 +1,48 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "release"  # debug, release, test
+
+database:
+  driver: "sqlite"
+  dsn: "/app/data/frp-panel.db"
+  # For PostgreSQL:
+  # driver: "postgres"
+  # dsn: "host=postgres user=frp-panel password=change-me dbname=frp-panel port=5432 sslmode=disable"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+jwt:
+  secret: "change-this-to-a-random-secret-key"
+  expire_time: 86400  # 24 hours in seconds
+  issuer: "frp-panel"
+
+frp:
+  default_version: "0.68.0"
+  github_mirror: ""  # Optional: custom GitHub mirror URL
+  download_timeout: 300
+  plugin_webhook_url: ""  # Panel's public URL for frps plugin callback
+  poller_interval: 30  # Dashboard API polling interval in seconds
+  server_token: "change-this-to-a-random-frps-token"
+
+admin:
+  email: "admin@example.com"
+  password: "change-me-immediately"
+
+license:
+  auth_server: "https://ymsq.movewellpro.fun"
+
+update:
+  center_url: ""
+  instance_key: ""
+  panel_version: "1.0.0"
+  panel_domain: ""
+  control_public_key: ""
+  identity_key_file: "/app/data/update-identity.key"
+  lease_cache_file: "/app/data/update-lease.json"
+  bootstrap_cache_file: "/app/data/update-bootstrap.json"
+  bootstrap_urls: []
+  anonymous_statistics: false

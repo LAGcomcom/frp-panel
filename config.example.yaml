@@ -1,0 +1,45 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "release"
+
+database:
+  driver: "sqlite"
+  dsn: "/var/lib/frp-panel/frp-panel.db"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+jwt:
+  secret: "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+  expire_time: 24h
+  issuer: "frp-panel"
+
+frp:
+  default_version: "0.68.0"
+  github_mirror: ""
+  download_timeout: 300
+  plugin_webhook_url: ""
+  poller_interval: 30
+  server_token: "CHANGE_ME_TO_A_LONG_RANDOM_TOKEN"
+
+admin:
+  email: "admin@example.com"
+  password: "CHANGE_ME_IMMEDIATELY"
+
+license:
+  auth_server: "https://ymsq.movewellpro.fun"
+
+update:
+  center_url: ""
+  instance_key: ""
+  panel_version: "dev"
+  panel_domain: ""
+  control_public_key: ""
+  identity_key_file: "/var/lib/frp-panel/update-identity.key"
+  lease_cache_file: "/var/lib/frp-panel/update-lease.json"
+  bootstrap_cache_file: "/var/lib/frp-panel/update-bootstrap.json"
+  bootstrap_urls: []
+  anonymous_statistics: false

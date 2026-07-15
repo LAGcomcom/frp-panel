@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FRP Panel - 专业的内网穿透管理平台</title>
+<meta name="description" content="FRP Panel 是一个功能强大的 frp 可视化管理面板，支持多服务器集群、一键部署、流量计费、用户管理。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   FRP Panel Landing
+   Style: Stripe + Linear + GitHub — clean, functional, no AI gloss
+   ============================================================ */
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f6f8fa;
+  --bg-muted: #f0f2f5;
+  --surface: #ffffff;
+  --border: #d1d9e0;
+  --border-light: #e8ecf0;
+  --text: #1f2328;
+  --text-secondary: #656d76;
+  --text-muted: #8b949e;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-light: #eff6ff;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --max-w: 1120px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  scroll-behavior: smooth;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.container {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+@media (min-width: 768px) { .container { padding: 0 32px; } }
+
+/* ---- NAV ---- */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light);
+  transition: border-color 0.2s;
+}
+
+.nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.nav-logo-icon {
+  width: 28px;
+  height: 28px;
+  background: var(--text);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-links {
+  display: none;
+  align-items: center;
+  gap: 28px;
+  list-style: none;
+}
+
+@media (min-width: 768px) { .nav-links { display: flex; } }
+
+.nav-links a {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: color 0.15s;
+}
+
+.nav-links a:hover { color: var(--text); }
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---- BUTTONS ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s;
+  background: var(--surface);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--bg-subtle);
+  border-color: var(--border);
+}
+
+.btn-primary {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+.btn-primary:hover {
+  background: #333d47;
+  border-color: #333d47;
+}
+
+.btn-accent {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.btn-accent:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-lg {
+  padding: 12px 24px;
+  font-size: 15px;
+  border-radius: var(--radius);
+}
+
+.btn-sm {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+/* ---- HERO ---- */
+.hero {
+  padding: 120px 0 80px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.hero-content {
+  max-width: 640px;
+}
+
+.hero-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.hero-label-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--success);
+  border-radius: 50%;
+}
+
+.hero h1 {
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  color: var(--text);
+  margin-bottom: 20px;
+}
+
+@media (min-width: 768px) {
+  .hero h1 { font-size: 52px; }
+}
+
+.hero p {
+  font-size: 17px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-bottom: 32px;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hero-meta {
+  margin-top: 32px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.hero-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---- DASHBOARD PREVIEW ---- */
+.preview {
+  margin: 64px auto 0;
+  max-width: 960px;
+}
+
+.preview-frame {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
+}
+
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: #fff;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.preview-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.preview-dot:nth-child(1) { background: #ff5f57; }
+.preview-dot:nth-child(2) { background: #febc2e; }
+.preview-dot:nth-child(3) { background: #28c840; }
+
+.preview-url {
+  margin-left: 10px;
+  padding: 3px 10px;
+  background: var(--bg-subtle);
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.preview-body {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .preview-body { grid-template-columns: repeat(2, 1fr); }
+}
+
+.preview-stat {
+  background: #fff;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.preview-stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.preview-stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+.preview-stat-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ---- SECTION ---- */
+.section {
+  padding: 80px 0;
+}
+
+.section--alt {
+  background: var(--bg-subtle);
+}
+
+.section-header {
+  max-width: 560px;
+  margin-bottom: 48px;
+}
+
+.section-header.center {
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin-bottom: 12px;
+}
+
+@media (min-width: 768px) {
+  .section-title { font-size: 32px; }
+}
+
+.section-desc {
+  font-size: 15px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+/* ---- FEATURES ---- */
+.features-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  background: var(--border-light);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+@media (min-width: 768px) {
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (min-width: 1024px) {
+  .features-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.feature-card {
+  background: #fff;
+  padding: 28px 24px;
+  transition: background 0.15s;
+}
+
+.feature-card:hover {
+  background: var(--bg-subtle);
+}
+
+.feature-icon {
+  width: 36px;
+  height: 36px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  color: var(--text-secondary);
+}
+
+.feature-card h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.feature-card p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+/* ---- STEPS ---- */
+.steps-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 40px;
+  counter-reset: step;
+}
+
+@media (min-width: 768px) {
+  .steps-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 32px;
+  }
+}
+
+.step {
+  counter-increment: step;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: var(--text);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.step h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.step p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+/* ---- PRICING ---- */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 768px) {
+  .pricing-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.pricing-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px 28px;
+  transition: border-color 0.15s;
+}
+
+.pricing-card:hover {
+  border-color: var(--text-muted);
+}
+
+.pricing-card.popular {
+  border-color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06);
+  position: relative;
+}
+
+.pricing-tag {
+  position: absolute;
+  top: -11px;
+  left: 28px;
+  padding: 2px 10px;
+  background: var(--text);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 100px;
+}
+
+.pricing-name {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.pricing-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.pricing-price {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-bottom: 20px;
+}
+
+.pricing-currency {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.pricing-amount {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-family: var(--font-mono);
+}
+
+.pricing-period {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+.pricing-features {
+  list-style: none;
+  margin-bottom: 24px;
+  border-top: 1px solid var(--border-light);
+  padding-top: 20px;
+}
+
+.pricing-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.pricing-features li svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+.pricing-card .btn { width: 100%; }
+
+/* ---- FAQ ---- */
+.faq-list {
+  max-width: 680px;
+  margin: 0 auto;
+  border-top: 1px solid var(--border-light);
+}
+
+.faq-item {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.faq-q {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font);
+  transition: color 0.15s;
+}
+
+.faq-q:hover { color: var(--accent); }
+
+.faq-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.faq-item.open .faq-icon { transform: rotate(45deg); }
+
+.faq-a {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease-out;
+}
+
+.faq-item.open .faq-a { max-height: 200px; }
+
+.faq-a-inner {
+  padding: 0 0 18px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+/* ---- CTA ---- */
+.cta {
+  padding: 80px 0;
+  text-align: center;
+  border-top: 1px solid var(--border-light);
+}
+
+.cta h2 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+
+@media (min-width: 768px) { .cta h2 { font-size: 32px; } }
+
+.cta p {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-bottom: 28px;
+}
+
+.cta-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ---- FOOTER ---- */
+.footer {
+  padding: 32px 0;
+  border-top: 1px solid var(--border-light);
+  background: var(--bg-subtle);
+}
+
+.footer-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .footer-inner {
+    flex-direction: row;
+    justify-content: space-between;
+    text-align: left;
+  }
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.footer-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.footer-logo-icon {
+  width: 24px;
+  height: 24px;
+  background: var(--text);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.footer-links {
+  display: flex;
+  gap: 20px;
+  list-style: none;
+}
+
+.footer-links a {
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: color 0.15s;
+}
+
+.footer-links a:hover { color: var(--text); }
+
+.footer-copy {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---- ANIMATIONS ---- */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-in-1 { animation-delay: 0.05s; }
+.animate-in-2 { animation-delay: 0.1s; }
+.animate-in-3 { animation-delay: 0.15s; }
+.animate-in-4 { animation-delay: 0.2s; }
+
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.scroll-reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.stagger > .scroll-reveal:nth-child(1) { transition-delay: 0s; }
+.stagger > .scroll-reveal:nth-child(2) { transition-delay: 0.04s; }
+.stagger > .scroll-reveal:nth-child(3) { transition-delay: 0.08s; }
+.stagger > .scroll-reveal:nth-child(4) { transition-delay: 0.12s; }
+.stagger > .scroll-reveal:nth-child(5) { transition-delay: 0.16s; }
+.stagger > .scroll-reveal:nth-child(6) { transition-delay: 0.2s; }
+
+/* Mobile */
+@media (max-width: 767px) {
+  .nav-links.show {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: 56px;
+    left: 0;
+    right: 0;
+    background: rgba(255,255,255,0.97);
+    backdrop-filter: blur(12px);
+    padding: 8px 24px;
+    border-bottom: 1px solid var(--border-light);
+    gap: 0;
+  }
+  .nav-links.show a {
+    display: block;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-light);
+  }
+  .nav-links.show li:last-child a { border-bottom: none; }
+  .hero h1 { font-size: 32px; }
+}
+
+.mobile-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.mobile-menu-btn:hover { background: var(--bg-subtle); }
+
+@media (min-width: 768px) { .mobile-menu-btn { display: none; } }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="#" class="nav-logo">
+      <div class="nav-logo-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      FRP Panel
+    </a>
+
+    <ul class="nav-links" id="navLinks">
+      <li><a href="#features">功能</a></li>
+      <li><a href="#how">工作原理</a></li>
+      <li><a href="#pricing">价格</a></li>
+      <li><a href="#faq">常见问题</a></li>
+    </ul>
+
+    <div class="nav-actions">
+      <a href="/user/" class="btn btn-sm">登录</a>
+      <a href="/user/" class="btn btn-primary btn-sm">注册</a>
+    </div>
+
+    <button class="mobile-menu-btn" onclick="document.getElementById('navLinks').classList.toggle('show')" aria-label="菜单">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-content">
+      <div class="hero-label animate-in">
+        <span class="hero-label-dot"></span>
+        开源 · 可自部署 · 生产就绪
+      </div>
+
+      <h1 class="animate-in animate-in-1">
+        专业的内网穿透<br>管理平台
+      </h1>
+
+      <p class="animate-in animate-in-2">
+        基于 frp 构建的一站式管理面板。支持多服务器集群、一键部署、流量计费、用户管理。让内网穿透像云服务一样简单。
+      </p>
+
+      <div class="hero-actions animate-in animate-in-3">
+        <a href="/user/" class="btn btn-primary btn-lg">免费开始使用</a>
+        <a href="#features" class="btn btn-lg">了解更多</a>
+      </div>
+
+      <div class="hero-meta animate-in animate-in-4">
+        <span class="hero-meta-item">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          无需信用卡
+        </span>
+        <span class="hero-meta-item">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          开源免费
+        </span>
+        <span class="hero-meta-item">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          5 分钟完成部署
+        </span>
+      </div>
+    </div>
+
+    <!-- Dashboard Preview -->
+    <div class="preview animate-in animate-in-4">
+      <div class="preview-frame">
+        <div class="preview-bar">
+          <div class="preview-dot"></div>
+          <div class="preview-dot"></div>
+          <div class="preview-dot"></div>
+          <div class="preview-url">panel.example.com/dashboard</div>
+        </div>
+        <div class="preview-body">
+          <div class="preview-stat">
+            <div class="preview-stat-label">服务器</div>
+            <div class="preview-stat-value">12</div>
+            <div class="preview-stat-sub">全部在线</div>
+          </div>
+          <div class="preview-stat">
+            <div class="preview-stat-label">活跃代理</div>
+            <div class="preview-stat-value">1,847</div>
+            <div class="preview-stat-sub">+12.5% 本月</div>
+          </div>
+          <div class="preview-stat">
+            <div class="preview-stat-label">用户数</div>
+            <div class="preview-stat-value">326</div>
+            <div class="preview-stat-sub">+28 本月新增</div>
+          </div>
+          <div class="preview-stat">
+            <div class="preview-stat-label">本月流量</div>
+            <div class="preview-stat-value">2.4 TB</div>
+            <div class="preview-stat-sub">配额 68%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-header center scroll-reveal">
+      <div class="section-label">核心功能</div>
+      <h2 class="section-title">为运维而生的管理面板</h2>
+      <p class="section-desc">从服务器部署到用户计费，FRP Panel 提供完整的内网穿透管理解决方案</p>
+    </div>
+
+    <div class="features-grid stagger">
+      <div class="feature-card scroll-reveal">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        </div>
+        <h3>多服务器集群</h3>
+        <p>集中管理所有 frps 服务器，支持一键部署、配置同步、实时监控。Dashboard API 和 HTTP Plugin 双通道通信。</p>
+      </div>
+
+      <div class="feature-card scroll-reveal">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>一键 SSH 部署</h3>
+        <p>输入服务器 IP 和 SSH 凭证，自动完成 frp 下载、配置生成、systemd 注册、健康检查全流程。</p>
+      </div>
+
+      <div class="feature-card scroll-reveal">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <h3>用户与权限</h3>
+        <p>多级 RBAC 权限体系，支持邀请码注册、API 密钥管理、账户余额系统。</p>
+      </div>
+
+      <div class="feature-card scroll-reveal">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        </div>
+        <h3>流量计费</h3>
+        <p>实时流量统计、套餐配额管理、超额自动处理。支持月付/季付/年付，余额/支付宝/微信支付。</p>
+      </div>
+
+      <div class="feature-card scroll-reveal">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        </div>
+        <h3>实时监控</h3>
+        <p>CPU/内存/磁盘/网络/连接数全方位监控。10 秒级状态更新，Dashboard API 轮询 + Plugin 事件推送。</p>
+      </div>
+
+      <div class="feature-card scroll-reveal">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        </div>
+        <h3>配置生成</h3>
+        <p>自动生成 frps/frpc 配置。支持 TCP/UDP/HTTP/HTTPS/STCP/XTCP 六种代理类型。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="section section--alt" id="how">
+  <div class="container">
+    <div class="section-header center scroll-reveal">
+      <div class="section-label">工作原理</div>
+      <h2 class="section-title">三步开始使用</h2>
+      <p class="section-desc">从注册到第一个代理隧道上线，只需几分钟</p>
+    </div>
+
+    <div class="steps-grid stagger">
+      <div class="step scroll-reveal">
+        <div class="step-num">1</div>
+        <h3>部署面板</h3>
+        <p>Docker 一键部署，或下载二进制文件直接运行。配置数据库即可启动。</p>
+      </div>
+      <div class="step scroll-reveal">
+        <div class="step-num">2</div>
+        <h3>添加服务器</h3>
+        <p>在管理端添加 frps 服务器信息，点击部署按钮自动通过 SSH 安装配置。</p>
+      </div>
+      <div class="step scroll-reveal">
+        <div class="step-num">3</div>
+        <h3>创建代理</h3>
+        <p>用户注册后选择服务器和代理类型，填写本地地址，frpc 配置自动生成。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section class="section" id="pricing">
+  <div class="container">
+    <div class="section-header center scroll-reveal">
+      <div class="section-label">价格方案</div>
+      <h2 class="section-title">简单透明的定价</h2>
+      <p class="section-desc">按需选择，随时升级。所有方案均包含完整功能</p>
+    </div>
+
+    <div class="pricing-grid stagger">
+      <div class="pricing-card scroll-reveal">
+        <div class="pricing-name">免费版</div>
+        <div class="pricing-desc">个人开发者和轻量使用</div>
+        <div class="pricing-price">
+          <span class="pricing-currency">&yen;</span>
+          <span class="pricing-amount">0</span>
+          <span class="pricing-period">永久免费</span>
+        </div>
+        <ul class="pricing-features">
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            3 个代理隧道
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            5 MB/s 带宽
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            10 GB 月流量
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            社区支持
+          </li>
+        </ul>
+        <a href="/user/" class="btn">免费开始</a>
+      </div>
+
+      <div class="pricing-card popular scroll-reveal">
+        <div class="pricing-tag">推荐</div>
+        <div class="pricing-name">专业版</div>
+        <div class="pricing-desc">小型团队和企业使用</div>
+        <div class="pricing-price">
+          <span class="pricing-currency">&yen;</span>
+          <span class="pricing-amount">29</span>
+          <span class="pricing-period">/月</span>
+        </div>
+        <ul class="pricing-features">
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            20 个代理隧道
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            50 MB/s 带宽
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            200 GB 月流量
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            自定义域名
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            优先技术支持
+          </li>
+        </ul>
+        <a href="/user/" class="btn btn-primary">立即订阅</a>
+      </div>
+
+      <div class="pricing-card scroll-reveal">
+        <div class="pricing-name">企业版</div>
+        <div class="pricing-desc">大规模部署和定制需求</div>
+        <div class="pricing-price">
+          <span class="pricing-currency">&yen;</span>
+          <span class="pricing-amount">99</span>
+          <span class="pricing-period">/月</span>
+        </div>
+        <ul class="pricing-features">
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            无限代理隧道
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            200 MB/s 带宽
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            1 TB 月流量
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Agent 深度管理
+          </li>
+          <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            专属技术支持
+          </li>
+        </ul>
+        <a href="/user/" class="btn">联系销售</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section section--alt" id="faq">
+  <div class="container">
+    <div class="section-header center scroll-reveal">
+      <div class="section-label">常见问题</div>
+      <h2 class="section-title">有疑问？看看这里</h2>
+    </div>
+
+    <div class="faq-list scroll-reveal">
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          FRP Panel 和直接使用 frp 有什么区别？
+          <svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-a"><div class="faq-a-inner">
+          直接使用 frp 需要手动编写配置文件、管理进程、监控状态。FRP Panel 提供可视化管理界面，支持一键部署服务器、自助创建代理、实时监控、流量统计、用户计费等功能，大幅降低运维成本。
+        </div></div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          支持哪些代理协议？
+          <svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-a"><div class="faq-a-inner">
+          支持 TCP、UDP、HTTP、HTTPS、STCP（安全 TCP）、XTCP（P2P 穿透）六种代理类型。HTTP/HTTPS 类型支持自定义域名和子域名。
+        </div></div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          可以自部署吗？需要什么环境？
+          <svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-a"><div class="faq-a-inner">
+          完全支持自部署。面板需要 Go 环境和 SQLite 或 PostgreSQL，可选 Redis。提供 Docker Compose 一键部署方案。frps 服务器需要 Linux，面板通过 SSH 自动部署。
+        </div></div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          流量统计准确吗？
+          <svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-a"><div class="faq-a-inner">
+          面板每 5 分钟通过 frps Dashboard API 拉取各代理的流量数据，计算增量后写入数据库。数据来源是 frps 自身的流量计数器，准确可靠。
+        </div></div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          支持哪些支付方式？
+          <svg class="faq-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-a"><div class="faq-a-inner">
+          内置余额支付，同时支持接入支付宝和微信支付。支付配置在管理端系统设置中完成。
+        </div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+  <div class="container">
+    <div class="scroll-reveal">
+      <h2>准备好开始了吗？</h2>
+      <p>免费注册即可体验完整功能。无需信用卡，永久免费版可用。</p>
+      <div class="cta-actions">
+        <a href="/user/" class="btn btn-primary btn-lg">免费注册</a>
+        <a href="https://github.com" class="btn btn-lg" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-left">
+      <div class="footer-logo">
+        <div class="footer-logo-icon">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        FRP Panel
+      </div>
+    </div>
+    <ul class="footer-links">
+      <li><a href="#features">功能</a></li>
+      <li><a href="#pricing">价格</a></li>
+      <li><a href="#faq">常见问题</a></li>
+      <li><a href="/admin/">管理后台</a></li>
+      <li><a href="/user/">用户中心</a></li>
+    </ul>
+    <div class="footer-copy">&copy; 2024 FRP Panel</div>
+  </div>
+</footer>
+
+<script>
+// Scroll reveal
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+}, { threshold: 0.1 });
+document.querySelectorAll('.scroll-reveal').forEach(el => obs.observe(el));
+
+// FAQ
+function toggleFaq(btn) {
+  const item = btn.parentElement;
+  const open = item.classList.contains('open');
+  document.querySelectorAll('.faq-item.open').forEach(i => i.classList.remove('open'));
+  if (!open) item.classList.add('open');
+}
+
+// Smooth scroll
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const t = document.querySelector(a.getAttribute('href'));
+    if (t) { e.preventDefault(); t.scrollIntoView({ behavior: 'smooth' }); }
+  });
+});
+</script>
+
+</body>
+</html>
