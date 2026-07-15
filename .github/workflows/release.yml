@@ -52,8 +52,9 @@ jobs:
           else
             printf 'dev-%s\n' "$GITHUB_SHA" > release/version.txt
           fi
+          cp install.sh release/install.sh
           cd release
-          sha256sum frp-panel-linux-* version.txt > checksums.txt
+          sha256sum frp-panel-linux-* version.txt install.sh > checksums.txt
 
       - name: Test
         run: go test ./...
@@ -67,4 +68,5 @@ jobs:
             release/frp-panel-linux-amd64
             release/frp-panel-linux-arm64
             release/version.txt
+            release/install.sh
             release/checksums.txt
