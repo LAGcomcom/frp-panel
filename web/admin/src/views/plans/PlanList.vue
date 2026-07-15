@@ -131,27 +131,18 @@
           <div class="form-section-title">价格设置</div>
           <el-row :gutter="16">
             <el-col :span="8">
-              <el-form-item label="月付">
-                <el-input v-model="form.price_monthly" placeholder="0.00">
-                  <template #prefix>&yen;</template>
-                  <template #append>/月</template>
-                </el-input>
+              <el-form-item label="月付（元）">
+                <el-input-number v-model="form.price_monthly" :min="0" :precision="2" :step="0.1" controls-position="right" class="price-number-input" />
               </el-form-item>
             </el-col>
             <el-col :span="8">
-              <el-form-item label="季付">
-                <el-input v-model="form.price_quarterly" placeholder="0.00">
-                  <template #prefix>&yen;</template>
-                  <template #append>/季</template>
-                </el-input>
+              <el-form-item label="季付（元）">
+                <el-input-number v-model="form.price_quarterly" :min="0" :precision="2" :step="0.1" controls-position="right" class="price-number-input" />
               </el-form-item>
             </el-col>
             <el-col :span="8">
-              <el-form-item label="年付">
-                <el-input v-model="form.price_yearly" placeholder="0.00">
-                  <template #prefix>&yen;</template>
-                  <template #append>/年</template>
-                </el-input>
+              <el-form-item label="年付（元）">
+                <el-input-number v-model="form.price_yearly" :min="0" :precision="2" :step="0.1" controls-position="right" class="price-number-input" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -296,6 +287,10 @@ function formatPrice(price: number): string {
   margin-bottom: 12px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--color-border-light);
+}
+
+.price-number-input {
+  width: 100%;
 }
 
 .plan-name-cell {

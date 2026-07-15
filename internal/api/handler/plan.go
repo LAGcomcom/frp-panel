@@ -1,6 +1,12 @@
 package handler
 
 import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
 	"github.com/gin-gonic/gin"
@@ -11,23 +17,52 @@ type PlanHandler struct {
 	db *gorm.DB
 }
 
+type flexibleFloat64 float64
+
+func (f *flexibleFloat64) UnmarshalJSON(data []byte) error {
+	var value float64
+	if len(data) > 0 && data[0] == '"' {
+		var raw string
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return err
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			*f = 0
+			return nil
+		}
+		parsed, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return fmt.Errorf("invalid price %q", raw)
+		}
+		value = parsed
+	} else if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("price must be a finite number")
+	}
+	*f = flexibleFloat64(value)
+	return nil
+}
+
 func NewPlanHandler(db *gorm.DB) *PlanHandler {
 	return &PlanHandler{db: db}
 }
 
 type CreatePlanRequest struct {
-	Name           string  `json:"name" binding:"required"`
-	Description    string  `json:"description"`
-	MaxProxies     int     `json:"max_proxies"`
-	MaxBandwidth   int64   `json:"max_bandwidth"`
-	MaxTraffic     int64   `json:"max_traffic"`
-	MaxPorts       int     `json:"max_ports"`
-	DurationDays   int     `json:"duration_days" binding:"required"`
-	PriceMonthly   float64 `json:"price_monthly"`
-	PriceQuarterly float64 `json:"price_quarterly"`
-	PriceYearly    float64 `json:"price_yearly"`
-	Features       string  `json:"features"`
-	SortOrder      int     `json:"sort_order"`
+	Name           string          `json:"name" binding:"required"`
+	Description    string          `json:"description"`
+	MaxProxies     int             `json:"max_proxies"`
+	MaxBandwidth   int64           `json:"max_bandwidth"`
+	MaxTraffic     int64           `json:"max_traffic"`
+	MaxPorts       int             `json:"max_ports"`
+	DurationDays   int             `json:"duration_days" binding:"required"`
+	PriceMonthly   flexibleFloat64 `json:"price_monthly"`
+	PriceQuarterly flexibleFloat64 `json:"price_quarterly"`
+	PriceYearly    flexibleFloat64 `json:"price_yearly"`
+	Features       string          `json:"features"`
+	SortOrder      int             `json:"sort_order"`
 }
 
 func (h *PlanHandler) CreatePlan(c *gin.Context) {
@@ -45,9 +80,9 @@ func (h *PlanHandler) CreatePlan(c *gin.Context) {
 		MaxTraffic:     req.MaxTraffic,
 		MaxPorts:       req.MaxPorts,
 		DurationDays:   req.DurationDays,
-		PriceMonthly:   req.PriceMonthly,
-		PriceQuarterly: req.PriceQuarterly,
-		PriceYearly:    req.PriceYearly,
+		PriceMonthly:   float64(req.PriceMonthly),
+		PriceQuarterly: float64(req.PriceQuarterly),
+		PriceYearly:    float64(req.PriceYearly),
 		Features:       req.Features,
 		SortOrder:      req.SortOrder,
 		Status:         "active",
@@ -107,9 +142,9 @@ func (h *PlanHandler) UpdatePlan(c *gin.Context) {
 		"max_traffic":     req.MaxTraffic,
 		"max_ports":       req.MaxPorts,
 		"duration_days":   req.DurationDays,
-		"price_monthly":   req.PriceMonthly,
-		"price_quarterly": req.PriceQuarterly,
-		"price_yearly":    req.PriceYearly,
+		"price_monthly":   float64(req.PriceMonthly),
+		"price_quarterly": float64(req.PriceQuarterly),
+		"price_yearly":    float64(req.PriceYearly),
 		"features":        req.Features,
 		"sort_order":      req.SortOrder,
 	}

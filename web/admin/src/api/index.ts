@@ -33,8 +33,22 @@ export const installAgent = (id: number) => http.post(`/admin/servers/${id}/inst
 
 // Plans
 export const getPlans = (params?: any) => http.get('/admin/plans', { params }) as any
-export const createPlan = (data: any) => http.post('/admin/plans', data) as any
-export const updatePlan = (id: number, data: any) => http.put(`/admin/plans/${id}`, data) as any
+const planNumberFields = [
+  'max_proxies', 'max_bandwidth', 'max_traffic', 'max_ports', 'duration_days',
+  'price_monthly', 'price_quarterly', 'price_yearly', 'sort_order',
+]
+const normalizePlanPayload = (data: any) => {
+  const payload = { ...data }
+  for (const field of planNumberFields) {
+    if (payload[field] === undefined) continue
+    const value = payload[field] === '' || payload[field] === null ? 0 : Number(payload[field])
+    if (!Number.isFinite(value)) throw new Error(`${field} must be a number`)
+    payload[field] = value
+  }
+  return payload
+}
+export const createPlan = (data: any) => http.post('/admin/plans', normalizePlanPayload(data)) as any
+export const updatePlan = (id: number, data: any) => http.put(`/admin/plans/${id}`, normalizePlanPayload(data)) as any
 export const togglePlanStatus = (id: number) => http.put(`/admin/plans/${id}/toggle`) as any
 export const deletePlan = (id: number) => http.delete(`/admin/plans/${id}`) as any
 
