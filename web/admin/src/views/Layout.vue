@@ -161,15 +161,15 @@
       <div class="update-notes">{{ updateInfo?.notes || '此版本包含稳定性与安全更新。' }}</div>
       <div v-if="updateInfo?.sha256" class="update-checksum">SHA-256：{{ updateInfo.sha256 }}</div>
       <template #footer>
-        <el-button v-if="!updateInfo?.mandatory" @click="showUpdateDialog = false">稍后提醒</el-button>
-        <el-button type="primary" @click="openUpdateDownload">获取更新</el-button>
+        <el-button v-if="!updateInfo?.mandatory" @click="dismissUpdate">暂不更新</el-button>
+        <el-button type="primary" :loading="updateDownloading" @click="openUpdateDownload">下载更新</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
@@ -180,6 +180,9 @@ const router = useRouter()
 const authStore = useAuthStore()
 const isCollapsed = ref(false)
 const siteTitle = ref('FRP 管理面板')
+const dismissedUpdateStorageKey = 'frp_panel_dismissed_update'
+const updateCheckIntervalMs = 30 * 60 * 1000
+let updateCheckTimer: number | undefined
 
 onMounted(async () => {
   try {
@@ -187,25 +190,44 @@ onMounted(async () => {
     if (res.data?.site_title) siteTitle.value = res.data.site_title + ' 管理'
   } catch {}
 
-  try {
-    const res = await checkPanelUpdate()
-    if (res.data?.enabled && res.data?.update_available && res.data?.release) {
-      currentVersion.value = res.data.current_version
-      updateInfo.value = res.data.release
-      showUpdateDialog.value = true
-    }
-  } catch {
-    // Update service availability must never block the admin panel.
-  }
+  await checkForPanelUpdate()
+  updateCheckTimer = window.setInterval(checkForPanelUpdate, updateCheckIntervalMs)
+})
+
+onBeforeUnmount(() => {
+  if (updateCheckTimer !== undefined) window.clearInterval(updateCheckTimer)
 })
 
 const showUpdateDialog = ref(false)
 const currentVersion = ref('')
 const updateInfo = ref<any>(null)
+const updateDownloading = ref(false)
+
+async function checkForPanelUpdate() {
+  try {
+    const res = await checkPanelUpdate()
+    const release = res.data?.release
+    if (!res.data?.enabled || !res.data?.update_available || !release?.version) return
+    currentVersion.value = res.data.current_version
+    updateInfo.value = release
+    if (release.mandatory || localStorage.getItem(dismissedUpdateStorageKey) !== release.version) {
+      showUpdateDialog.value = true
+    }
+  } catch {
+    // Update service availability must never block the admin panel.
+  }
+}
+
+function dismissUpdate() {
+  const version = updateInfo.value?.version
+  if (version) localStorage.setItem(dismissedUpdateStorageKey, version)
+  showUpdateDialog.value = false
+}
 
 async function openUpdateDownload() {
   const version = updateInfo.value?.version
   if (!version) return
+  updateDownloading.value = true
   try {
     const token = localStorage.getItem('admin_token')
     const response = await fetch(`/api/admin/update/download/${encodeURIComponent(version)}`, {
@@ -219,8 +241,13 @@ async function openUpdateDownload() {
     link.download = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1] || `frp-panel-${version}`
     link.click()
     URL.revokeObjectURL(url)
+    localStorage.setItem(dismissedUpdateStorageKey, version)
+    showUpdateDialog.value = false
+    ElMessage.success('更新包已下载')
   } catch {
     ElMessage.error('更新包下载或校验失败')
+  } finally {
+    updateDownloading.value = false
   }
 }
 

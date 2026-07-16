@@ -9,6 +9,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	DefaultUpdateCenterURL        = "https://08642.xyz"
+	DefaultUpdateControlPublicKey = "HU5iQjEL7v24v5aK0K+gHTctvWorW+iLq5bhpXf9lSU="
+)
+
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
@@ -101,6 +106,10 @@ func Load(path string) (*Config, error) {
 			Email:    "",
 			Password: "",
 		},
+		Update: UpdateConfig{
+			CenterURL:        DefaultUpdateCenterURL,
+			ControlPublicKey: DefaultUpdateControlPublicKey,
+		},
 	}
 
 	if path == "" {
@@ -117,6 +126,12 @@ func Load(path string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
+	}
+	if cfg.Update.CenterURL == "" {
+		cfg.Update.CenterURL = DefaultUpdateCenterURL
+	}
+	if cfg.Update.ControlPublicKey == "" {
+		cfg.Update.ControlPublicKey = DefaultUpdateControlPublicKey
 	}
 
 	return cfg, nil
