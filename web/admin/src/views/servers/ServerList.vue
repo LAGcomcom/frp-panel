@@ -22,6 +22,13 @@
             </el-tag>
           </template>
         </el-table-column>
+		<el-table-column label="鉴权" width="100">
+		  <template #default="{ row }">
+			<el-tag :type="row.plugin_auth_enabled ? 'success' : 'warning'" size="small">
+			  {{ row.plugin_auth_enabled ? '安全模式' : '需重新部署' }}
+			</el-tag>
+		  </template>
+		</el-table-column>
         <el-table-column label="延迟" width="80">
           <template #default="{ row }">
             <span v-if="row.latency > 0" class="text-mono" :style="{ color: row.latency < 100 ? '#1a7f37' : row.latency < 300 ? '#9a6700' : '#cf222e' }">{{ row.latency }}ms</span>

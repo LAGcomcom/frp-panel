@@ -8,12 +8,14 @@ import (
 
 func TestGenerateFrpcConfig(t *testing.T) {
 	server := &model.Server{
+		ID:       9,
 		IP:       "1.2.3.4",
 		BindPort: 7000,
 		Token:    "test-token-123",
 	}
 	user := &model.User{
-		ID: 1,
+		ID:     1,
+		APIKey: "user-api-key",
 	}
 	proxies := []model.Proxy{
 		{
@@ -55,8 +57,14 @@ func TestGenerateFrpcConfig(t *testing.T) {
 	if !contains(config, `serverPort = 7000`) {
 		t.Error("missing serverPort")
 	}
-	if !contains(config, "[auth]") || !contains(config, `token = "test-token-123"`) {
-		t.Error("missing auth token")
+	if !contains(config, "[auth]") || !contains(config, `token = "user-api-key"`) {
+		t.Error("missing user API key auth")
+	}
+	if contains(config, "test-token-123") {
+		t.Error("node token must not be included in client config")
+	}
+	if !contains(config, `server_id = "9"`) {
+		t.Error("missing server metadata")
 	}
 	if !contains(config, `name = "my-ssh"`) {
 		t.Error("missing ssh proxy name")
@@ -90,6 +98,32 @@ func TestFormatBandwidth(t *testing.T) {
 		result := FormatBandwidth(tt.input)
 		if result != tt.expected {
 			t.Errorf("FormatBandwidth(%d) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestGenerateFrpcConfigEscapesTOMLStrings(t *testing.T) {
+	server := &model.Server{ID: 7, IP: "host\\name\nnext", BindPort: 7000}
+	user := &model.User{APIKey: "key\"\\\nvalue"}
+	proxies := []model.Proxy{{
+		Name: "proxy\"\nname", Type: "tcp", LocalIP: "C:\\local\nline", LocalPort: 80,
+		CustomDomains: "domain\\name.example,quote\".example", SecretKey: "secret\"\\\nvalue",
+	}}
+
+	config, err := GenerateFrpcConfig(server, user, proxies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`serverAddr = "host\\name\nnext"`,
+		`token = "key\"\\\nvalue"`,
+		`name = "proxy\"\nname"`,
+		`localIP = "C:\\local\nline"`,
+		`"domain\\name.example"`,
+		`"quote\".example"`,
+	} {
+		if !contains(config, want) {
+			t.Errorf("generated config does not contain escaped string %q:\n%s", want, config)
 		}
 	}
 }

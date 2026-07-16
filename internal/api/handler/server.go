@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
 	"github.com/frp-panel/frp-panel/internal/pkg/hash"
 	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/gin-gonic/gin"
@@ -109,39 +111,21 @@ func (h *ServerHandler) ListServers(c *gin.Context) {
 	offset := (parseInt(page) - 1) * parseInt(size)
 	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Find(&servers)
 
-	// Fetch real-time data from frps dashboard for each running server
+	latencyLimit := make(chan struct{}, 8)
+	var latencyWG sync.WaitGroup
 	for i := range servers {
 		if servers[i].Status == "running" {
-			// Measure latency via TCP connect to bind port
-			latency, reachable := measureTCPLatency(fmt.Sprintf("%s:%d", servers[i].IP, servers[i].BindPort), 2*time.Second)
-			if reachable {
-				servers[i].Latency = latency
-			}
-
-			info := fetchFrpsInfo(servers[i].IP, servers[i].DashboardPort, servers[i].DashboardUser, servers[i].DashboardPassword)
-			if info != nil {
-				if info.Version != "" {
-					servers[i].FrpVersion = info.Version
-				}
-				servers[i].ClientCount = info.ClientCounts
-				// Calculate total proxy count
-				total := 0
-				for _, count := range info.ProxyTypeCount {
-					total += count
-				}
-				servers[i].ProxyCount = total
-				// Update in DB
-				updates := map[string]interface{}{
-					"client_count": info.ClientCounts,
-					"proxy_count":  total,
-				}
-				if info.Version != "" {
-					updates["frp_version"] = info.Version
-				}
-				h.db.Model(&servers[i]).Updates(updates)
-			}
+			latencyWG.Add(1)
+			go func(index int, address string) {
+				defer latencyWG.Done()
+				latencyLimit <- struct{}{}
+				defer func() { <-latencyLimit }()
+				latency, _ := measureTCPLatency(address, 2*time.Second)
+				servers[index].Latency = latency
+			}(i, fmt.Sprintf("%s:%d", servers[i].IP, servers[i].BindPort))
 		}
 	}
+	latencyWG.Wait()
 
 	// Mask sensitive fields
 	for i := range servers {
@@ -157,8 +141,23 @@ func (h *ServerHandler) ListServers(c *gin.Context) {
 
 // ListAvailableServers returns running servers with basic info for users
 func (h *ServerHandler) ListAvailableServers(c *gin.Context) {
+	userID := c.MustGet("user_id").(uint)
+	user, err := accesscontrol.LoadUser(h.db, userID)
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+	if accesscontrol.IsPlanGroupExpired(user) {
+		response.Success(c, []model.Server{})
+		return
+	}
 	var servers []model.Server
-	h.db.Where("status = ?", "running").Order("id asc").Find(&servers)
+	query := h.db.Where("status = ?", "running")
+	if user.GroupID != nil {
+		query = query.Where("plugin_auth_enabled = ? AND id IN (?)", true, h.db.Model(&model.UserGroupServer{}).
+			Select("server_id").Where("user_group_id = ?", *user.GroupID))
+	}
+	query.Order("id asc").Find(&servers)
 
 	type ServerMetrics struct {
 		CPUUsage    float64 `json:"cpu_usage"`
@@ -191,29 +190,11 @@ func (h *ServerHandler) ListAvailableServers(c *gin.Context) {
 		Metrics        *ServerMetrics `json:"metrics,omitempty"`
 	}
 
-	var result []ServerInfo
-	for _, s := range servers {
-		// Measure latency
-		latency, _ := measureTCPLatency(fmt.Sprintf("%s:%d", s.IP, s.BindPort), 2*time.Second)
-
-		// Get real-time proxy count from frps
-		info := fetchFrpsInfo(s.IP, s.DashboardPort, s.DashboardUser, s.DashboardPassword)
-		clientCount := s.ClientCount
-		proxyCount := s.ProxyCount
-		if info != nil {
-			if info.Version != "" {
-				s.FrpVersion = info.Version
-				h.db.Model(&s).Update("frp_version", info.Version)
-			}
-			clientCount = info.ClientCounts
-			total := 0
-			for _, count := range info.ProxyTypeCount {
-				total += count
-			}
-			proxyCount = total
-		}
-
-		si := ServerInfo{
+	result := make([]ServerInfo, len(servers))
+	latencyLimit := make(chan struct{}, 8)
+	var latencyWG sync.WaitGroup
+	for i, s := range servers {
+		result[i] = ServerInfo{
 			ID:             s.ID,
 			Name:           s.Name,
 			IP:             s.IP,
@@ -222,9 +203,8 @@ func (h *ServerHandler) ListAvailableServers(c *gin.Context) {
 			BindPort:       s.BindPort,
 			VhostHTTPPort:  s.VhostHTTPPort,
 			VhostHTTPSPort: s.VhostHTTPSPort,
-			ClientCount:    clientCount,
-			ProxyCount:     proxyCount,
-			Latency:        latency,
+			ClientCount:    s.ClientCount,
+			ProxyCount:     s.ProxyCount,
 			AgentInstalled: s.AgentInstalled,
 		}
 
@@ -234,13 +214,21 @@ func (h *ServerHandler) ListAvailableServers(c *gin.Context) {
 			if err := h.db.Where("server_id = ?", s.ID).Order("timestamp desc").First(&history).Error; err == nil {
 				var m ServerMetrics
 				if err := json.Unmarshal([]byte(history.Data), &m); err == nil {
-					si.Metrics = &m
+					result[i].Metrics = &m
 				}
 			}
 		}
 
-		result = append(result, si)
+		latencyWG.Add(1)
+		go func(index int, address string) {
+			defer latencyWG.Done()
+			latencyLimit <- struct{}{}
+			defer func() { <-latencyLimit }()
+			latency, _ := measureTCPLatency(address, 2*time.Second)
+			result[index].Latency = latency
+		}(i, fmt.Sprintf("%s:%d", s.IP, s.BindPort))
 	}
+	latencyWG.Wait()
 
 	response.Success(c, result)
 }
@@ -351,7 +339,7 @@ func (h *ServerHandler) UpdateServer(c *gin.Context) {
 	var req struct {
 		Name              string `json:"name"`
 		Region            string `json:"region"`
-		MaxUsers          int    `json:"max_users"`
+		MaxUsers          *int   `json:"max_users"`
 		BindPort          int    `json:"bind_port"`
 		DashboardPort     int    `json:"dashboard_port"`
 		DashboardUser     string `json:"dashboard_user"`
@@ -372,8 +360,12 @@ func (h *ServerHandler) UpdateServer(c *gin.Context) {
 	if req.Region != "" {
 		updates["region"] = req.Region
 	}
-	if req.MaxUsers > 0 {
-		updates["max_users"] = req.MaxUsers
+	if req.MaxUsers != nil {
+		if *req.MaxUsers < 0 {
+			response.BadRequest(c, "max users cannot be negative")
+			return
+		}
+		updates["max_users"] = *req.MaxUsers
 	}
 	if req.BindPort > 0 {
 		updates["bind_port"] = req.BindPort
@@ -570,7 +562,11 @@ func (h *ServerHandler) UpdateServerConfig(c *gin.Context) {
 // Get frps logs from remote server
 func (h *ServerHandler) GetServerLogs(c *gin.Context) {
 	id := c.Param("id")
-	lines, _ := strconv.Atoi(c.DefaultQuery("lines", "100"))
+	lines, err := strconv.Atoi(c.DefaultQuery("lines", "100"))
+	if err != nil || lines < 1 || lines > 2000 {
+		response.BadRequest(c, "log lines must be between 1 and 2000")
+		return
+	}
 
 	var server model.Server
 	if err := h.db.First(&server, id).Error; err != nil {

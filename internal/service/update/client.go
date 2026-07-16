@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +22,8 @@ type Client struct {
 	baseURL    string
 	startOnce  sync.Once
 	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	identityMu sync.Mutex
 }
 
 type Release struct {
@@ -46,21 +47,26 @@ func NewClient(cfg config.UpdateConfig, instanceID string) *Client {
 	return &Client{cfg: cfg, instanceID: instanceID, baseURL: strings.TrimRight(cfg.CenterURL, "/"), http: &http.Client{Timeout: 15 * time.Second}}
 }
 
+func (c *Client) centerURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+func (c *Client) setCenterURL(value string) {
+	c.mu.Lock()
+	c.baseURL = strings.TrimRight(value, "/")
+	c.mu.Unlock()
+}
+
 func (c *Client) Check(ctx context.Context) (*CheckResult, error) {
-	result := &CheckResult{Enabled: c.FeatureAvailable("private_updates"), CurrentVersion: c.cfg.PanelVersion}
-	if c.baseURL == "" {
+	centerURL := c.centerURL()
+	result := &CheckResult{Enabled: centerURL != "" && c.cfg.PanelVersion != "", CurrentVersion: c.cfg.PanelVersion}
+	if centerURL == "" {
 		return result, nil
 	}
-	if c.cfg.PanelVersion == "" || c.cfg.PanelDomain == "" {
-		return nil, fmt.Errorf("update is enabled but center_url, instance_key, panel_version or panel_domain is empty")
-	}
-	if c.cfg.AnonymousStatistics {
-		if err := c.post(ctx, "/api/v1/heartbeat", map[string]string{
-			"id": c.instanceID, "domain": c.cfg.PanelDomain, "version": c.cfg.PanelVersion,
-			"os": runtime.GOOS, "arch": runtime.GOARCH,
-		}, nil); err != nil {
-			return nil, fmt.Errorf("report update heartbeat: %w", err)
-		}
+	if c.cfg.PanelVersion == "" {
+		return nil, fmt.Errorf("update center requires panel_version")
 	}
 	var response struct {
 		UpdateAvailable bool      `json:"update_available"`
@@ -85,12 +91,11 @@ func (c *Client) post(ctx context.Context, path string, payload any, output any)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.baseURL, "/")+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.centerURL()+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Instance-Key", c.cfg.InstanceKey)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

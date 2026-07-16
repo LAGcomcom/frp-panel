@@ -15,7 +15,6 @@ import (
 	"github.com/frp-panel/frp-panel/internal/model"
 	"github.com/frp-panel/frp-panel/internal/pkg/hash"
 	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
-	"github.com/frp-panel/frp-panel/internal/pkg/license"
 	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/frp-panel/frp-panel/internal/service/monitor"
 	updateservice "github.com/frp-panel/frp-panel/internal/service/update"
@@ -55,8 +54,10 @@ func main() {
 
 	// Auto migrate
 	if err := db.AutoMigrate(
-		&model.User{},
 		&model.Server{},
+		&model.UserGroup{},
+		&model.UserGroupServer{},
+		&model.User{},
 		&model.Proxy{},
 		&model.Plan{},
 		&model.Order{},
@@ -83,30 +84,6 @@ func main() {
 	// Seed default settings
 	seedSettings(db)
 
-	// Initialize license manager
-	licenseManager := license.NewManager(db, cfg.License.AuthServer)
-
-	// Start anti-tamper integrity guard (periodic runtime checks)
-	license.StartIntegrityGuard()
-	// Record binary hash at startup for self-verification
-	license.GetBinaryHash()
-	// Prevent function pointer swapping
-	license.PreventSwap()
-
-	// Try to load existing license
-	existingLicense, err := licenseManager.LoadLicense()
-	if err != nil {
-		log.Printf("[LICENSE] Failed to load license: %v", err)
-		log.Printf("[LICENSE] Panel will run in unlicensed mode. Activate via /api/license/activate")
-	} else if existingLicense != nil && existingLicense.Valid {
-		log.Printf("[LICENSE] License loaded: %s (expires: %s)", existingLicense.LicenseKey, existingLicense.ExpiresAt)
-		licenseManager.StartHeartbeat()
-	} else {
-		log.Printf("[LICENSE] No valid license found. Panel will run in unlicensed mode.")
-		log.Printf("[LICENSE] Device ID: %s", license.GetDeviceID())
-		log.Printf("[LICENSE] Activate via POST /api/license/activate")
-	}
-
 	// Initialize JWT manager
 	jwtManager := jwt.NewJWTManager(cfg.JWT.Secret, cfg.JWT.ExpireTime, cfg.JWT.Issuer)
 
@@ -132,9 +109,9 @@ func main() {
 	monitor.StartOrderExpireJob(db)
 
 	// Setup router
-	updateClient := updateservice.NewClient(cfg.Update, license.GetDeviceID())
+	updateClient := updateservice.NewClient(cfg.Update, cfg.Update.InstanceID)
 	updateClient.Start(context.Background())
-	r := api.SetupRouter(db, jwtManager, d, alertManager, cfg.FRP.ServerToken, licenseManager, updateClient)
+	r := api.SetupRouter(db, jwtManager, d, alertManager, cfg.FRP.ServerToken, updateClient)
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
@@ -144,7 +121,6 @@ func main() {
 		<-quit
 		log.Println("Shutting down...")
 		updateClient.Stop()
-		licenseManager.StopHeartbeat()
 		p.Stop()
 		os.Exit(0)
 	}()

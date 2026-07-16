@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/frp-panel/frp-panel/internal/api/middleware"
-	"github.com/frp-panel/frp-panel/internal/pkg/license"
 	"github.com/gin-gonic/gin"
 )
 
@@ -18,14 +16,8 @@ func projectRoot() string {
 	return filepath.Join(filepath.Dir(file), "..", "..")
 }
 
-func registerStaticRoutes(r *gin.Engine, lm *license.Manager) {
+func registerStaticRoutes(r *gin.Engine) {
 	root := projectRoot()
-
-	// Load license activation page into middleware
-	licensePage := filepath.Join(root, "internal/api/dist/license/index.html")
-	if data, err := os.ReadFile(licensePage); err == nil {
-		middleware.SetLicensePage(data)
-	}
 
 	r.Static("/admin/assets", filepath.Join(root, "web/admin/dist"))
 	r.Static("/user/assets", filepath.Join(root, "web/user/dist"))
@@ -33,15 +25,6 @@ func registerStaticRoutes(r *gin.Engine, lm *license.Manager) {
 
 	r.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
-
-		// If license is not active, serve license activation page
-		if lm != nil && !lm.IsActive() {
-			licensePage := filepath.Join(root, "internal/api/dist/license/index.html")
-			if _, err := os.Stat(licensePage); err == nil {
-				c.File(licensePage)
-				return
-			}
-		}
 
 		switch {
 		case strings.HasPrefix(path, "/admin"):

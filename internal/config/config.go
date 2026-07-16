@@ -16,26 +16,24 @@ type Config struct {
 	JWT      JWTConfig      `yaml:"jwt"`
 	FRP      FRPConfig      `yaml:"frp"`
 	Admin    AdminConfig    `yaml:"admin"`
-	License  LicenseConfig  `yaml:"license"`
 	Update   UpdateConfig   `yaml:"update"`
 }
 
 type UpdateConfig struct {
-	Enabled             bool     `yaml:"enabled"` // Deprecated: only controls anonymous statistics.
-	CenterURL           string   `yaml:"center_url"`
-	InstanceKey         string   `yaml:"instance_key"` // One-time enrollment token.
-	PanelVersion        string   `yaml:"panel_version"`
-	PanelDomain         string   `yaml:"panel_domain"`
-	ControlPublicKey    string   `yaml:"control_public_key"`
-	IdentityKeyFile     string   `yaml:"identity_key_file"`
-	LeaseCacheFile      string   `yaml:"lease_cache_file"`
-	BootstrapCacheFile  string   `yaml:"bootstrap_cache_file"`
-	BootstrapURLs       []string `yaml:"bootstrap_urls"`
-	AnonymousStatistics bool     `yaml:"anonymous_statistics"`
-}
-
-type LicenseConfig struct {
-	AuthServer string `yaml:"auth_server"` // 授权服务器地址
+	Enabled             bool          `yaml:"enabled"` // Deprecated: use heartbeat_enabled.
+	CenterURL           string        `yaml:"center_url"`
+	InstanceKey         string        `yaml:"instance_key"` // One-time enrollment token.
+	InstanceID          string        `yaml:"instance_id"`
+	PanelVersion        string        `yaml:"panel_version"`
+	PanelDomain         string        `yaml:"panel_domain"`
+	HeartbeatEnabled    bool          `yaml:"heartbeat_enabled"`
+	HeartbeatInterval   time.Duration `yaml:"heartbeat_interval"`
+	ControlPublicKey    string        `yaml:"control_public_key"`
+	IdentityKeyFile     string        `yaml:"identity_key_file"`
+	LeaseCacheFile      string        `yaml:"lease_cache_file"`
+	BootstrapCacheFile  string        `yaml:"bootstrap_cache_file"`
+	BootstrapURLs       []string      `yaml:"bootstrap_urls"`
+	AnonymousStatistics bool          `yaml:"anonymous_statistics"` // Deprecated compatibility alias for heartbeat_enabled.
 }
 
 type ServerConfig struct {
@@ -102,9 +100,6 @@ func Load(path string) (*Config, error) {
 		Admin: AdminConfig{
 			Email:    "",
 			Password: "",
-		},
-		License: LicenseConfig{
-			AuthServer: "https://ymsq.movewellpro.fun",
 		},
 	}
 

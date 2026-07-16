@@ -22,6 +22,12 @@
           <span class="text-mono">&yen;{{ row.balance?.toFixed(2) }}</span>
         </template>
       </el-table-column>
+	  <el-table-column label="用户组" width="130">
+		<template #default="{ row }">{{ row.group?.name || '未分组' }}</template>
+	  </el-table-column>
+	  <el-table-column label="单代理带宽" width="120">
+		<template #default="{ row }">{{ row.bandwidth_limit > 0 ? formatBandwidth(row.bandwidth_limit) : '继承套餐' }}</template>
+	  </el-table-column>
       <el-table-column prop="status" label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.status === 'active' ? 'success' : 'danger'" size="small">
@@ -91,6 +97,11 @@ async function handleUnban(row: any) {
   await unbanUser(row.id)
   ElMessage.success('用户已解封')
   fetchData()
+}
+
+function formatBandwidth(bytes: number) {
+  const mb = bytes / 1024 / 1024
+  return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB/s`
 }
 </script>
 

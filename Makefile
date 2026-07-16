@@ -32,11 +32,10 @@ user-web:
 
 # Copy frontend dist into Go embed directory
 embed-frontend: web
-	mkdir -p internal/api/dist/landing internal/api/dist/admin internal/api/dist/user internal/api/dist/license
+	mkdir -p internal/api/dist/landing internal/api/dist/admin internal/api/dist/user
 	cp web/landing/index.html internal/api/dist/landing/index.html
 	cp -r web/admin/dist/* internal/api/dist/admin/
 	cp -r web/user/dist/* internal/api/dist/user/
-	cp web/license/index.html internal/api/dist/license/index.html
 
 # Dev mode (frontend only)
 dev-admin:

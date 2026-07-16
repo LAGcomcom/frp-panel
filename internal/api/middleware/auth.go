@@ -3,12 +3,14 @@ package middleware
 import (
 	"strings"
 
-	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
 	"github.com/frp-panel/frp-panel/internal/api/response"
+	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-func JWTAuth(jwtManager *jwt.JWTManager) gin.HandlerFunc {
+func JWTAuth(jwtManager *jwt.JWTManager, db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := ""
 
@@ -39,9 +41,21 @@ func JWTAuth(jwtManager *jwt.JWTManager) gin.HandlerFunc {
 			return
 		}
 
-		c.Set("user_id", claims.UserID)
-		c.Set("email", claims.Email)
-		c.Set("role", claims.Role)
+		var user model.User
+		if err := db.Select("id", "email", "role", "status").First(&user, claims.UserID).Error; err != nil {
+			response.Unauthorized(c, "account no longer exists")
+			c.Abort()
+			return
+		}
+		if user.Status != "active" {
+			response.Forbidden(c, "account is not active")
+			c.Abort()
+			return
+		}
+
+		c.Set("user_id", user.ID)
+		c.Set("email", user.Email)
+		c.Set("role", user.Role)
 		c.Next()
 	}
 }

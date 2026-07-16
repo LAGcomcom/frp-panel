@@ -68,6 +68,10 @@
       </div>
 
       <div class="order-detail">
+		<div class="order-row">
+		  <span class="order-label">有效期</span>
+		  <span class="order-value">{{ selectedDurationDays }} 天</span>
+		</div>
         <div class="order-row">
           <span class="order-label">原价</span>
           <span class="order-value">&yen;{{ originalPrice.toFixed(2) }}</span>
@@ -196,6 +200,12 @@ const originalPrice = computed(() => {
 })
 
 const finalPrice = computed(() => Math.max(0, originalPrice.value - couponDiscount.value))
+const selectedDurationDays = computed(() => {
+  const baseDays = Math.max(1, Number(selectedPlan.value?.duration_days || 30))
+  if (durationType.value === 'quarterly') return baseDays * 3
+  if (durationType.value === 'yearly') return baseDays * 12
+  return baseDays
+})
 
 // Re-verify coupon when duration type changes
 watch(durationType, () => {

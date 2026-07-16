@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/hash"
 	"github.com/frp-panel/frp-panel/internal/pkg/sshpool"
 	"gorm.io/gorm"
 )
@@ -45,6 +47,7 @@ type FrpsConfig struct {
 	DashboardUser     string
 	DashboardPassword string
 	PluginAddr        string
+	PluginPath        string
 	MaxPoolCount      int
 	LogFile           string
 }
@@ -81,8 +84,9 @@ password = "{{.DashboardPassword}}"
 [[httpPlugins]]
 name = "frp-panel"
 addr = "{{.PluginAddr}}"
-path = "/"
+path = "{{.PluginPath}}"
 ops = ["Login", "NewProxy", "CloseProxy", "Ping"]
+tlsVerify = true
 {{end}}
 
 [transport]
@@ -513,17 +517,28 @@ func (d *Deployer) Deploy(server *model.Server, panelAddr string) error {
 
 	// Step 4: Generate and upload frps.toml
 	log.Printf("[Deployer] Generating frps config...")
+	pluginSecret := server.PluginSecret
+	if pluginSecret == "" {
+		pluginSecret = hash.RandomString(32)
+	}
+	nodeToken := hash.RandomString(32)
+	pluginAddr, pluginPath, err := buildPluginEndpoint(panelAddr, server.ID, pluginSecret)
+	if err != nil {
+		d.setError(server, fmt.Sprintf("Invalid plugin webhook URL: %v", err))
+		return err
+	}
 	config := FrpsConfig{
 		BindAddr:          "0.0.0.0",
 		BindPort:          server.BindPort,
-		Token:             server.Token,
+		Token:             nodeToken,
 		VhostHTTPPort:     server.VhostHTTPPort,
 		VhostHTTPSPort:    server.VhostHTTPSPort,
 		DashboardAddr:     "0.0.0.0",
 		DashboardPort:     server.DashboardPort,
 		DashboardUser:     server.DashboardUser,
 		DashboardPassword: server.DashboardPassword,
-		PluginAddr:        panelAddr,
+		PluginAddr:        pluginAddr,
+		PluginPath:        pluginPath,
 		MaxPoolCount:      10,
 		LogFile:           "/var/log/frps.log",
 	}
@@ -560,10 +575,13 @@ func (d *Deployer) Deploy(server *model.Server, panelAddr string) error {
 	// Step 8: Update server status
 	now := time.Now()
 	d.db.Model(server).Updates(map[string]interface{}{
-		"status":         "running",
-		"frp_version":    version,
-		"last_heartbeat": &now,
-		"error_msg":      "",
+		"status":              "running",
+		"frp_version":         version,
+		"last_heartbeat":      &now,
+		"error_msg":           "",
+		"token":               nodeToken,
+		"plugin_secret":       pluginSecret,
+		"plugin_auth_enabled": true,
 	})
 
 	// Step 9: Install agent for metrics reporting
@@ -579,6 +597,34 @@ func (d *Deployer) Deploy(server *model.Server, panelAddr string) error {
 
 	log.Printf("[Deployer] Deployment successful for server %s", server.Name)
 	return nil
+}
+
+func buildPluginEndpoint(rawURL string, serverID uint, pluginSecret string) (string, string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "https://" + rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", "", fmt.Errorf("invalid webhook URL")
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return "", "", fmt.Errorf("public webhook URL must use HTTPS")
+	}
+	basePath := strings.TrimRight(u.EscapedPath(), "/")
+	if basePath == "" {
+		basePath = "/api/plugin/webhook"
+	}
+	path := fmt.Sprintf("%s/%d/%s", basePath, serverID, url.PathEscape(pluginSecret))
+	return u.Scheme + "://" + u.Host, path, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (d *Deployer) installAgent(server *model.Server, client *sshpool.Client) error {
@@ -666,6 +712,9 @@ func (d *Deployer) UpdateConfig(server *model.Server, configContent string, pane
 	// Upload new config
 	if err := client.UploadFile([]byte(configContent), "/opt/frp/frps.toml", "0644"); err != nil {
 		return fmt.Errorf("upload config failed: %v", err)
+	}
+	if err := d.db.Model(server).Update("plugin_auth_enabled", false).Error; err != nil {
+		return fmt.Errorf("invalidate plugin auth state: %v", err)
 	}
 
 	// Restart frps

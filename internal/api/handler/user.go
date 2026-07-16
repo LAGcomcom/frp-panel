@@ -9,6 +9,7 @@ import (
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
 	"github.com/frp-panel/frp-panel/internal/pkg/hash"
 	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
 	"github.com/gin-gonic/gin"
@@ -308,20 +309,15 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 	userID := c.MustGet("user_id").(uint)
 
 	var user model.User
-	if err := h.db.Preload("Plan").First(&user, userID).Error; err != nil {
+	if err := h.db.Preload("Plan").Preload("Group").First(&user, userID).Error; err != nil {
 		response.NotFound(c, "user not found")
 		return
 	}
 
 	// Check if plan has expired
-	if user.PlanID != nil && user.PlanExpiresAt != nil && user.PlanExpiresAt.Before(time.Now()) {
-		h.db.Model(&user).Updates(map[string]interface{}{
-			"plan_id":         nil,
-			"plan_expires_at": nil,
-		})
-		user.PlanID = nil
-		user.PlanExpiresAt = nil
-		user.Plan = nil
+	if err := accesscontrol.ExpireUserPlan(h.db, &user, time.Now()); err != nil {
+		response.InternalError(c, "failed to expire user plan")
+		return
 	}
 
 	response.Success(c, user)
@@ -515,7 +511,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 	query.Count(&total)
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Find(&users)
+	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("Plan").Preload("Group").Find(&users)
 
 	response.Page(c, users, total, parseInt(page), parseInt(size))
 }
@@ -525,7 +521,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 	id := c.Param("id")
 
 	var user model.User
-	if err := h.db.Preload("Plan").First(&user, id).Error; err != nil {
+	if err := h.db.Preload("Plan").Preload("Group").First(&user, id).Error; err != nil {
 		response.NotFound(c, "user not found")
 		return
 	}
@@ -543,12 +539,19 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 // Admin: Update user
 func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 	id := c.Param("id")
+	target, ok := h.requireManageableUser(c, id, false)
+	if !ok {
+		return
+	}
 
 	var req struct {
-		Role    string  `json:"role"`
-		Balance float64 `json:"balance"`
-		Status  string  `json:"status"`
-		PlanID  *uint   `json:"plan_id"`
+		Role           string  `json:"role"`
+		Balance        float64 `json:"balance"`
+		Status         string  `json:"status"`
+		PlanID         *uint   `json:"plan_id"`
+		GroupID        *uint   `json:"group_id"`
+		ClearGroup     bool    `json:"clear_group"`
+		BandwidthLimit *int64  `json:"bandwidth_limit"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -557,6 +560,19 @@ func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 
 	updates := map[string]interface{}{}
 	if req.Role != "" {
+		actorRole, _ := c.Get("role")
+		if actorRole != "super_admin" {
+			response.Forbidden(c, "只有超级管理员可以修改用户角色")
+			return
+		}
+		if req.Role != "user" && req.Role != "admin" && req.Role != "super_admin" {
+			response.BadRequest(c, "用户角色无效")
+			return
+		}
+		if actorID, exists := c.Get("user_id"); exists && actorID == target.ID && req.Role != "super_admin" {
+			response.BadRequest(c, "不能降低自己的超级管理员权限")
+			return
+		}
 		updates["role"] = req.Role
 	}
 	if req.Balance != 0 {
@@ -566,7 +582,27 @@ func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 		updates["status"] = req.Status
 	}
 	if req.PlanID != nil {
-		updates["plan_id"] = req.PlanID
+		response.BadRequest(c, "请使用套餐分配接口调整用户套餐")
+		return
+	}
+	if req.ClearGroup {
+		updates["group_id"] = nil
+		updates["group_source"] = ""
+	} else if req.GroupID != nil {
+		var group model.UserGroup
+		if err := h.db.First(&group, *req.GroupID).Error; err != nil {
+			response.BadRequest(c, "用户组不存在")
+			return
+		}
+		updates["group_id"] = *req.GroupID
+		updates["group_source"] = "manual"
+	}
+	if req.BandwidthLimit != nil {
+		if *req.BandwidthLimit < 0 {
+			response.BadRequest(c, "带宽限制不能小于 0")
+			return
+		}
+		updates["bandwidth_limit"] = *req.BandwidthLimit
 	}
 
 	if err := h.db.Model(&model.User{}).Where("id = ?", id).Updates(updates).Error; err != nil {
@@ -577,9 +613,74 @@ func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 	response.SuccessWithMessage(c, "user updated", nil)
 }
 
+func (h *UserHandler) AdminAssignPlan(c *gin.Context) {
+	target, ok := h.requireManageableUser(c, c.Param("id"), false)
+	if !ok {
+		return
+	}
+	var req struct {
+		PlanID       uint   `json:"plan_id" binding:"required"`
+		DurationType string `json:"duration_type" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	var plan model.Plan
+	if err := h.db.First(&plan, req.PlanID).Error; err != nil {
+		response.BadRequest(c, "套餐不存在")
+		return
+	}
+	days := planDurationDays(&plan, req.DurationType)
+	if days <= 0 {
+		response.BadRequest(c, "套餐周期无效")
+		return
+	}
+	expiresAt := time.Now().In(beijingTZ).AddDate(0, 0, days)
+	updates := map[string]interface{}{
+		"plan_id":         plan.ID,
+		"plan_expires_at": expiresAt,
+	}
+	if plan.GroupID != nil {
+		updates["group_id"] = *plan.GroupID
+		updates["group_source"] = "plan"
+	} else if target.GroupSource == "plan" || target.GroupSource == "expired_plan" {
+		updates["group_id"] = nil
+		updates["group_source"] = ""
+	}
+	if err := h.db.Model(target).Updates(updates).Error; err != nil {
+		response.InternalError(c, "failed to assign plan")
+		return
+	}
+	response.SuccessWithMessage(c, "套餐已分配", gin.H{"expires_at": expiresAt})
+}
+
+func (h *UserHandler) AdminClearPlan(c *gin.Context) {
+	target, ok := h.requireManageableUser(c, c.Param("id"), false)
+	if !ok {
+		return
+	}
+	updates := map[string]interface{}{
+		"plan_id":         nil,
+		"plan_expires_at": nil,
+	}
+	if target.GroupSource == "plan" || target.GroupSource == "expired_plan" {
+		updates["group_id"] = nil
+		updates["group_source"] = ""
+	}
+	if err := h.db.Model(target).Updates(updates).Error; err != nil {
+		response.InternalError(c, "failed to clear plan")
+		return
+	}
+	response.SuccessWithMessage(c, "套餐已清除", nil)
+}
+
 // Admin: Ban user
 func (h *UserHandler) BanUser(c *gin.Context) {
 	id := c.Param("id")
+	if _, ok := h.requireManageableUser(c, id, true); !ok {
+		return
+	}
 	if err := h.db.Model(&model.User{}).Where("id = ?", id).Update("status", "banned").Error; err != nil {
 		response.InternalError(c, "failed to ban user")
 		return
@@ -590,11 +691,41 @@ func (h *UserHandler) BanUser(c *gin.Context) {
 // Admin: Unban user
 func (h *UserHandler) UnbanUser(c *gin.Context) {
 	id := c.Param("id")
+	if _, ok := h.requireManageableUser(c, id, false); !ok {
+		return
+	}
 	if err := h.db.Model(&model.User{}).Where("id = ?", id).Update("status", "active").Error; err != nil {
 		response.InternalError(c, "failed to unban user")
 		return
 	}
 	response.SuccessWithMessage(c, "user unbanned", nil)
+}
+
+func (h *UserHandler) requireManageableUser(c *gin.Context, id string, forbidSelf bool) (*model.User, bool) {
+	var target model.User
+	if err := h.db.First(&target, id).Error; err != nil {
+		response.NotFound(c, "user not found")
+		return nil, false
+	}
+	if !authorizeManageableUser(c, &target) {
+		return nil, false
+	}
+	if forbidSelf {
+		if actorID, exists := c.Get("user_id"); exists && actorID == target.ID {
+			response.BadRequest(c, "不能封禁当前登录账号")
+			return nil, false
+		}
+	}
+	return &target, true
+}
+
+func authorizeManageableUser(c *gin.Context, target *model.User) bool {
+	actorRole, _ := c.Get("role")
+	if actorRole != "super_admin" && target.Role != "user" {
+		response.Forbidden(c, "普通管理员只能管理普通用户")
+		return false
+	}
+	return true
 }
 
 func parseInt(s string) int {

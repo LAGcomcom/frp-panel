@@ -36,6 +36,15 @@
           <span class="text-mono" style="font-size: 12px">↓{{ formatBytes(row.traffic_in) }} ↑{{ formatBytes(row.traffic_out) }}</span>
         </template>
       </el-table-column>
+	  <el-table-column label="操作" width="170" fixed="right">
+		<template #default="{ row }">
+		  <div class="action-btns">
+			<el-button v-if="row.enabled" size="small" @click="handleDisable(row)">禁用</el-button>
+			<el-button v-else size="small" type="success" @click="handleEnable(row)">启用</el-button>
+			<el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+		  </div>
+		</template>
+	  </el-table-column>
     </el-table>
 
     <el-pagination
@@ -50,7 +59,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getProxies } from '../../api'
+import { deleteAdminProxy, disableAdminProxy, enableAdminProxy, getProxies } from '../../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const proxies = ref<any[]>([])
 const loading = ref(false)
@@ -69,6 +79,26 @@ async function fetchData() {
   } finally {
     loading.value = false
   }
+}
+
+async function handleEnable(row: any) {
+	await enableAdminProxy(row.id)
+	row.enabled = true
+	ElMessage.success('代理已启用')
+}
+
+async function handleDisable(row: any) {
+	await ElMessageBox.confirm(`确认禁用代理“${row.name}”？`, '确认禁用')
+	await disableAdminProxy(row.id)
+	row.enabled = false
+	ElMessage.success('代理已禁用')
+}
+
+async function handleDelete(row: any) {
+	await ElMessageBox.confirm(`确认删除代理“${row.name}”？此操作不可恢复。`, '确认删除', { type: 'warning' })
+	await deleteAdminProxy(row.id)
+	ElMessage.success('代理已删除')
+	await fetchData()
 }
 
 function displayAddr(row: any): string {
@@ -95,4 +125,7 @@ function formatBytes(bytes: number): string {
 
 <style scoped>
 /* page-header and page-title are defined in design-system.css */
+.action-btns :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
 </style>

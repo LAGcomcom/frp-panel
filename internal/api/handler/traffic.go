@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
@@ -49,25 +51,14 @@ func (h *TrafficHandler) GetTrafficStats(c *gin.Context) {
 	var servers []model.Server
 	h.db.Find(&servers)
 
+	serverProxies := fetchAllServerProxies(servers)
 	for _, proxy := range proxies {
-		proxyName := proxy.Name
-		if idx := indexOf(proxy.Name, '_'); idx > 0 {
-			proxyName = proxy.Name[idx+1:]
-		}
-		fullName := fmt.Sprintf("%s.%s", user.APIKey, proxyName)
-
 		var proxyIn, proxyOut int64
-		for _, server := range servers {
-			if server.Status != "running" {
-				continue
-			}
-			frpsProxies := fetchServerProxies(server.IP, server.DashboardPort, server.DashboardUser, server.DashboardPassword)
-			for _, p := range frpsProxies {
-				if p.Name == fullName {
-					proxyIn += p.TodayTrafficIn
-					proxyOut += p.TodayTrafficOut
-					break
-				}
+		for _, current := range serverProxies[proxy.ServerID] {
+			if matchesStoredProxyName(current.Name, &proxy, user.APIKey) {
+				proxyIn = current.TodayTrafficIn
+				proxyOut = current.TodayTrafficOut
+				break
 			}
 		}
 
@@ -121,7 +112,7 @@ func (h *TrafficHandler) GetTrafficStats(c *gin.Context) {
 		// Free plan limits from settings
 		settings := h.getSettingsMap()
 		maxProxies := 5
-		maxBandwidth := int64(10 * 1024 * 1024)    // 10MB/s
+		maxBandwidth := int64(10 * 1024 * 1024)      // 10MB/s
 		maxTraffic := int64(10 * 1024 * 1024 * 1024) // 10GB
 		if v := settings["free_max_proxies"]; v != "" {
 			fmt.Sscanf(v, "%d", &maxProxies)
@@ -202,12 +193,10 @@ func (h *TrafficHandler) AdminGetTrafficStats(c *gin.Context) {
 	var totalTrafficIn, totalTrafficOut int64
 	serverTraffic := make(map[uint][2]int64)
 	userTraffic := make(map[uint][2]int64)
+	serverProxies := fetchAllServerProxies(servers)
 
 	for _, server := range servers {
-		if server.Status != "running" {
-			continue
-		}
-		proxies := fetchServerProxies(server.IP, server.DashboardPort, server.DashboardUser, server.DashboardPassword)
+		proxies := serverProxies[server.ID]
 		for _, p := range proxies {
 			totalTrafficIn += p.TodayTrafficIn
 			totalTrafficOut += p.TodayTrafficOut
@@ -221,36 +210,28 @@ func (h *TrafficHandler) AdminGetTrafficStats(c *gin.Context) {
 	// Map proxy traffic to users
 	var allProxies []model.Proxy
 	h.db.Find(&allProxies)
+	var users []model.User
+	h.db.Select("id", "email", "api_key").Find(&users)
+	usersByID := make(map[uint]model.User, len(users))
+	for _, user := range users {
+		usersByID[user.ID] = user
+	}
 	for _, proxy := range allProxies {
-		// Find matching frps proxy
-		var user model.User
-		if err := h.db.First(&user, proxy.UserID).Error; err != nil {
+		user, ok := usersByID[proxy.UserID]
+		if !ok {
 			continue
 		}
-		proxyName := proxy.Name
-		if idx := indexOf(proxy.Name, '_'); idx > 0 {
-			proxyName = proxy.Name[idx+1:]
-		}
-		fullName := fmt.Sprintf("%s.%s", user.APIKey, proxyName)
-
-		for _, server := range servers {
-			if server.Status != "running" {
-				continue
-			}
-			proxies := fetchServerProxies(server.IP, server.DashboardPort, server.DashboardUser, server.DashboardPassword)
-			for _, p := range proxies {
-				if p.Name == fullName {
-					userTraffic[proxy.UserID] = [2]int64{
-						userTraffic[proxy.UserID][0] + p.TodayTrafficIn,
-						userTraffic[proxy.UserID][1] + p.TodayTrafficOut,
-					}
-					// Update proxy traffic in DB
-					h.db.Model(&proxy).Updates(map[string]interface{}{
-						"traffic_in":  p.TodayTrafficIn,
-						"traffic_out": p.TodayTrafficOut,
-					})
-					break
+		for _, current := range serverProxies[proxy.ServerID] {
+			if matchesStoredProxyName(current.Name, &proxy, user.APIKey) {
+				userTraffic[proxy.UserID] = [2]int64{
+					userTraffic[proxy.UserID][0] + current.TodayTrafficIn,
+					userTraffic[proxy.UserID][1] + current.TodayTrafficOut,
 				}
+				h.db.Model(&proxy).Updates(map[string]interface{}{
+					"traffic_in":  current.TodayTrafficIn,
+					"traffic_out": current.TodayTrafficOut,
+				})
+				break
 			}
 		}
 	}
@@ -264,8 +245,7 @@ func (h *TrafficHandler) AdminGetTrafficStats(c *gin.Context) {
 	}
 	var topUsers []UserTrafficInfo
 	for userID, traffic := range userTraffic {
-		var user model.User
-		h.db.Select("email").First(&user, userID)
+		user := usersByID[userID]
 		topUsers = append(topUsers, UserTrafficInfo{
 			UserID:     userID,
 			Email:      user.Email,
@@ -273,6 +253,9 @@ func (h *TrafficHandler) AdminGetTrafficStats(c *gin.Context) {
 			TrafficOut: traffic[1],
 		})
 	}
+	sort.Slice(topUsers, func(i, j int) bool {
+		return topUsers[i].TrafficIn+topUsers[i].TrafficOut > topUsers[j].TrafficIn+topUsers[j].TrafficOut
+	})
 
 	// Build top servers list
 	type ServerTrafficInfo struct {
@@ -292,6 +275,9 @@ func (h *TrafficHandler) AdminGetTrafficStats(c *gin.Context) {
 			TrafficOut: traffic[1],
 		})
 	}
+	sort.Slice(topServers, func(i, j int) bool {
+		return topServers[i].TrafficIn+topServers[i].TrafficOut > topServers[j].TrafficIn+topServers[j].TrafficOut
+	})
 
 	// Get real monthly traffic from TrafficDaily
 	var monthlyIn, monthlyOut int64
@@ -315,6 +301,50 @@ func (h *TrafficHandler) AdminGetTrafficStats(c *gin.Context) {
 		"top_users":   topUsers,
 		"top_servers": topServers,
 	})
+}
+
+func matchesStoredProxyName(frpsName string, proxy *model.Proxy, apiKey string) bool {
+	if frpsName == proxy.Name {
+		return true
+	}
+	name := proxy.Name
+	if idx := indexOf(name, '_'); idx > 0 {
+		name = name[idx+1:]
+	}
+	return frpsName == apiKey+"."+name || frpsName == apiKey+"."+proxy.Name
+}
+
+func fetchAllServerProxies(servers []model.Server) map[uint][]serverProxy {
+	type result struct {
+		serverID uint
+		proxies  []serverProxy
+	}
+	results := make(chan result, len(servers))
+	limit := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for _, server := range servers {
+		if server.Status != "running" {
+			continue
+		}
+		wg.Add(1)
+		go func(server model.Server) {
+			defer wg.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			results <- result{
+				serverID: server.ID,
+				proxies:  fetchServerProxies(server.IP, server.DashboardPort, server.DashboardUser, server.DashboardPassword),
+			}
+		}(server)
+	}
+	wg.Wait()
+	close(results)
+
+	byServer := make(map[uint][]serverProxy)
+	for result := range results {
+		byServer[result.serverID] = result.proxies
+	}
+	return byServer
 }
 
 type serverProxy struct {

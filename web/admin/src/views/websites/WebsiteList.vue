@@ -184,8 +184,8 @@ async function fetchData() {
 
 async function loadOptions() {
   const [sRes, uRes] = await Promise.all([
-    getServers({ page: 1, size: 100 }),
-    getUsers({ page: 1, size: 100 }),
+    getServers({ page: 1, size: 1000 }),
+    getUsers({ page: 1, size: 1000 }),
   ])
   servers.value = sRes.data?.list || []
   users.value = uRes.data?.list || []

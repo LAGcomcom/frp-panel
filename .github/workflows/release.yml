@@ -32,11 +32,10 @@ jobs:
           npm run build --prefix web/admin
           npm ci --prefix web/user
           npm run build --prefix web/user
-          mkdir -p internal/api/dist/{landing,admin,user,license} internal/api/bin release
+          mkdir -p internal/api/dist/{landing,admin,user} internal/api/bin release
           cp web/landing/index.html internal/api/dist/landing/index.html
           cp -r web/admin/dist/. internal/api/dist/admin/
           cp -r web/user/dist/. internal/api/dist/user/
-          cp web/license/index.html internal/api/dist/license/index.html
 
       - name: Build Linux binaries
         env:

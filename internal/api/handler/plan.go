@@ -58,6 +58,8 @@ type CreatePlanRequest struct {
 	MaxTraffic     int64           `json:"max_traffic"`
 	MaxPorts       int             `json:"max_ports"`
 	DurationDays   int             `json:"duration_days" binding:"required"`
+	GroupID        *uint           `json:"group_id"`
+	ClearGroup     bool            `json:"clear_group"`
 	PriceMonthly   flexibleFloat64 `json:"price_monthly"`
 	PriceQuarterly flexibleFloat64 `json:"price_quarterly"`
 	PriceYearly    flexibleFloat64 `json:"price_yearly"`
@@ -80,6 +82,7 @@ func (h *PlanHandler) CreatePlan(c *gin.Context) {
 		MaxTraffic:     req.MaxTraffic,
 		MaxPorts:       req.MaxPorts,
 		DurationDays:   req.DurationDays,
+		GroupID:        req.GroupID,
 		PriceMonthly:   float64(req.PriceMonthly),
 		PriceQuarterly: float64(req.PriceQuarterly),
 		PriceYearly:    float64(req.PriceYearly),
@@ -101,6 +104,10 @@ func (h *PlanHandler) CreatePlan(c *gin.Context) {
 		plan.MaxPorts = 10
 	}
 
+	if err := h.validateGroup(req.GroupID); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 	if err := h.db.Create(&plan).Error; err != nil {
 		response.InternalError(c, "failed to create plan")
 		return
@@ -111,14 +118,14 @@ func (h *PlanHandler) CreatePlan(c *gin.Context) {
 
 func (h *PlanHandler) ListPlans(c *gin.Context) {
 	var plans []model.Plan
-	h.db.Where("status = ?", "active").Order("sort_order asc, id asc").Find(&plans)
+	h.db.Where("status = ?", "active").Preload("Group").Order("sort_order asc, id asc").Find(&plans)
 	response.Success(c, plans)
 }
 
 func (h *PlanHandler) GetPlan(c *gin.Context) {
 	id := c.Param("id")
 	var plan model.Plan
-	if err := h.db.First(&plan, id).Error; err != nil {
+	if err := h.db.Preload("Group").First(&plan, id).Error; err != nil {
 		response.NotFound(c, "plan not found")
 		return
 	}
@@ -148,6 +155,15 @@ func (h *PlanHandler) UpdatePlan(c *gin.Context) {
 		"features":        req.Features,
 		"sort_order":      req.SortOrder,
 	}
+	if req.ClearGroup {
+		updates["group_id"] = nil
+	} else if req.GroupID != nil {
+		if err := h.validateGroup(req.GroupID); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		updates["group_id"] = *req.GroupID
+	}
 
 	if err := h.db.Model(&model.Plan{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		response.InternalError(c, "failed to update plan")
@@ -155,6 +171,20 @@ func (h *PlanHandler) UpdatePlan(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "plan updated", nil)
+}
+
+func (h *PlanHandler) validateGroup(groupID *uint) error {
+	if groupID == nil {
+		return nil
+	}
+	var count int64
+	if err := h.db.Model(&model.UserGroup{}).Where("id = ?", *groupID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("用户组不存在")
+	}
+	return nil
 }
 
 func (h *PlanHandler) DeletePlan(c *gin.Context) {
@@ -195,6 +225,6 @@ func (h *PlanHandler) TogglePlanStatus(c *gin.Context) {
 // Admin: List all plans (including archived)
 func (h *PlanHandler) AdminListPlans(c *gin.Context) {
 	var plans []model.Plan
-	h.db.Order("sort_order asc, id asc").Find(&plans)
+	h.db.Preload("Group").Order("sort_order asc, id asc").Find(&plans)
 	response.Success(c, plans)
 }

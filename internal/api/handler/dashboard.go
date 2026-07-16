@@ -18,6 +18,12 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 }
 
 func (h *DashboardHandler) GetDashboard(c *gin.Context) {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	tomorrow := todayStart.AddDate(0, 0, 1)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	nextMonth := monthStart.AddDate(0, 1, 0)
+
 	// Server stats
 	var totalServers, onlineServers int64
 	h.db.Model(&model.Server{}).Count(&totalServers)
@@ -26,7 +32,7 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 	// User stats
 	var totalUsers, todayUsers, activeUsers int64
 	h.db.Model(&model.User{}).Count(&totalUsers)
-	h.db.Model(&model.User{}).Where("DATE(created_at) = DATE(?)", time.Now()).Count(&todayUsers)
+	h.db.Model(&model.User{}).Where("created_at >= ? AND created_at < ?", todayStart, tomorrow).Count(&todayUsers)
 	h.db.Model(&model.User{}).Where("status = ?", "active").Count(&activeUsers)
 
 	// Proxy stats
@@ -44,15 +50,15 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 
 	// Traffic stats (today)
 	var todayTrafficIn, todayTrafficOut int64
-	h.db.Model(&model.TrafficDaily{}).Where("date = DATE(?)", time.Now()).
+	h.db.Model(&model.TrafficDaily{}).Where("date = ?", todayStart.Format("2006-01-02")).
 		Select("COALESCE(SUM(traffic_in), 0), COALESCE(SUM(traffic_out), 0)").
 		Row().Scan(&todayTrafficIn, &todayTrafficOut)
 
 	// Revenue stats
 	var todayRevenue, monthRevenue, totalRevenue float64
-	h.db.Model(&model.Order{}).Where("pay_status = ? AND DATE(paid_at) = DATE(?)", "paid", time.Now()).
+	h.db.Model(&model.Order{}).Where("pay_status = ? AND paid_at >= ? AND paid_at < ?", "paid", todayStart, tomorrow).
 		Select("COALESCE(SUM(amount), 0)").Row().Scan(&todayRevenue)
-	h.db.Model(&model.Order{}).Where("pay_status = ? AND MONTH(paid_at) = MONTH(?) AND YEAR(paid_at) = YEAR(?)", "paid", time.Now(), time.Now()).
+	h.db.Model(&model.Order{}).Where("pay_status = ? AND paid_at >= ? AND paid_at < ?", "paid", monthStart, nextMonth).
 		Select("COALESCE(SUM(amount), 0)").Row().Scan(&monthRevenue)
 	h.db.Model(&model.Order{}).Where("pay_status = ?", "paid").
 		Select("COALESCE(SUM(amount), 0)").Row().Scan(&totalRevenue)
@@ -71,14 +77,14 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 			"online": onlineServers,
 		},
 		"users": gin.H{
-			"total":   totalUsers,
-			"today":   todayUsers,
-			"active":  activeUsers,
+			"total":  totalUsers,
+			"today":  todayUsers,
+			"active": activeUsers,
 		},
 		"proxies": gin.H{
-			"total":    totalProxies,
-			"running":  runningProxies,
-			"by_type":  proxyTypes,
+			"total":   totalProxies,
+			"running": runningProxies,
+			"by_type": proxyTypes,
 		},
 		"traffic": gin.H{
 			"today_in":  todayTrafficIn,
@@ -89,7 +95,7 @@ func (h *DashboardHandler) GetDashboard(c *gin.Context) {
 			"month": monthRevenue,
 			"total": totalRevenue,
 		},
-		"recent_orders":   recentOrders,
-		"error_servers":   errorServers,
+		"recent_orders": recentOrders,
+		"error_servers": errorServers,
 	})
 }

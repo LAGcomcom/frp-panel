@@ -125,7 +125,7 @@ const openSend = async () => {
   // Load users for target selection
   if (users.value.length === 0) {
     try {
-      const res = await getUsers({ size: 100 })
+      const res = await getUsers({ size: 1000 })
       users.value = res.data.list || res.data
     } catch {}
   }

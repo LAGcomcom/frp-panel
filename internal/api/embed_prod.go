@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/frp-panel/frp-panel/internal/api/middleware"
-	"github.com/frp-panel/frp-panel/internal/pkg/license"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,26 +20,13 @@ var adminFS embed.FS
 //go:embed all:dist/user
 var userFS embed.FS
 
-//go:embed all:dist/license
-var licenseFS embed.FS
-
 //go:embed all:bin
 var binFS embed.FS
 
-var licenseManager *license.Manager
-
-func registerStaticRoutes(r *gin.Engine, lm *license.Manager) {
-	licenseManager = lm
-
+func registerStaticRoutes(r *gin.Engine) {
 	landingSub, _ := fs.Sub(landingFS, "dist/landing")
 	adminSub, _ := fs.Sub(adminFS, "dist/admin")
 	userSub, _ := fs.Sub(userFS, "dist/user")
-	licenseSub, _ := fs.Sub(licenseFS, "dist/license")
-
-	// Load license activation page into middleware
-	if licenseData, err := fs.ReadFile(licenseSub, "index.html"); err == nil {
-		middleware.SetLicensePage(licenseData)
-	}
 
 	// Get assets subdirectories
 	adminAssets, _ := fs.Sub(adminSub, "assets")
@@ -70,16 +55,6 @@ func registerStaticRoutes(r *gin.Engine, lm *license.Manager) {
 			strings.HasPrefix(path, "/admin/assets") || strings.HasPrefix(path, "/user/assets") {
 			c.Next()
 			return
-		}
-
-		// If license is not active, serve the license activation page
-		if licenseManager != nil && !licenseManager.IsActive() {
-			data, _ := fs.ReadFile(licenseSub, "index.html")
-			if data != nil {
-				c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-				c.Abort()
-				return
-			}
 		}
 
 		// Serve admin SPA

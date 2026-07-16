@@ -13,8 +13,16 @@ export const getDashboard = () => http.get('/admin/dashboard') as any
 export const getUsers = (params?: any) => http.get('/admin/users', { params }) as any
 export const getUser = (id: number) => http.get(`/admin/users/${id}`) as any
 export const updateUser = (id: number, data: any) => http.put(`/admin/users/${id}`, data) as any
+export const assignUserPlan = (id: number, data: { plan_id: number; duration_type: string }) => http.post(`/admin/users/${id}/plan`, data) as any
+export const clearUserPlan = (id: number) => http.delete(`/admin/users/${id}/plan`) as any
 export const banUser = (id: number) => http.post(`/admin/users/${id}/ban`) as any
 export const unbanUser = (id: number) => http.post(`/admin/users/${id}/unban`) as any
+
+// User groups
+export const getUserGroups = () => http.get('/admin/user-groups') as any
+export const createUserGroup = (data: any) => http.post('/admin/user-groups', data) as any
+export const updateUserGroup = (id: number, data: any) => http.put(`/admin/user-groups/${id}`, data) as any
+export const deleteUserGroup = (id: number) => http.delete(`/admin/user-groups/${id}`) as any
 
 // Servers
 export const getServers = (params?: any) => http.get('/admin/servers', { params }) as any
@@ -27,6 +35,10 @@ export const restartServer = (id: number) => http.post(`/admin/servers/${id}/res
 export const stopServer = (id: number) => http.post(`/admin/servers/${id}/stop`) as any
 export const getServerClients = (id: number) => http.get(`/admin/servers/${id}/clients`) as any
 export const getServerProxies = (id: number) => http.get(`/admin/servers/${id}/proxies`) as any
+export const getServerConfig = (id: number) => http.get(`/admin/servers/${id}/config`) as any
+export const updateServerConfig = (id: number, config: string) => http.put(`/admin/servers/${id}/config`, { config }) as any
+export const getServerLogs = (id: number, lines = 200) => http.get(`/admin/servers/${id}/logs`, { params: { lines } }) as any
+export const uninstallServer = (id: number) => http.post(`/admin/servers/${id}/uninstall`) as any
 export const getServerMetrics = (id: number, hours?: number) =>
   http.get(`/admin/servers/${id}/metrics`, { params: { hours: hours || 1 } }) as any
 export const installAgent = (id: number) => http.post(`/admin/servers/${id}/install-agent`) as any
@@ -42,7 +54,7 @@ const normalizePlanPayload = (data: any) => {
   for (const field of planNumberFields) {
     if (payload[field] === undefined) continue
     const value = payload[field] === '' || payload[field] === null ? 0 : Number(payload[field])
-    if (!Number.isFinite(value)) throw new Error(`${field} must be a number`)
+    if (!Number.isFinite(value)) throw new Error('套餐中的数值填写有误，请检查后重试')
     payload[field] = value
   }
   return payload
@@ -58,6 +70,9 @@ export const refundOrder = (id: number) => http.post(`/admin/orders/${id}/refund
 
 // Proxies
 export const getProxies = (params?: any) => http.get('/admin/proxies', { params }) as any
+export const enableAdminProxy = (id: number) => http.post(`/admin/proxies/${id}/enable`) as any
+export const disableAdminProxy = (id: number) => http.post(`/admin/proxies/${id}/disable`) as any
+export const deleteAdminProxy = (id: number) => http.delete(`/admin/proxies/${id}`) as any
 
 // Traffic
 export const getTrafficStats = () => http.get('/admin/traffic/stats') as any

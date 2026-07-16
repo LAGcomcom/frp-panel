@@ -43,6 +43,12 @@ const router = createRouter({
           component: () => import('../views/users/UserDetail.vue'),
           meta: { title: '用户详情', hidden: true },
         },
+		{
+		  path: 'user-groups',
+		  name: 'UserGroups',
+		  component: () => import('../views/users/UserGroupList.vue'),
+		  meta: { title: '用户组管理', icon: 'UserFilled' },
+		},
         {
           path: 'plans',
           name: 'Plans',

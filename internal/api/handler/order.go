@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,6 +16,11 @@ import (
 type OrderHandler struct {
 	db *gorm.DB
 }
+
+var (
+	errInsufficientBalance = errors.New("insufficient balance")
+	errOrderAlreadyPaid    = errors.New("order already paid")
+)
 
 func NewOrderHandler(db *gorm.DB) *OrderHandler {
 	return &OrderHandler{db: db}
@@ -48,18 +54,15 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	var amount float64
-	var days int
 	switch req.DurationType {
 	case "monthly":
 		amount = plan.PriceMonthly
-		days = 30
 	case "quarterly":
 		amount = plan.PriceQuarterly
-		days = 90
 	case "yearly":
 		amount = plan.PriceYearly
-		days = 365
 	}
+	days := planDurationDays(&plan, req.DurationType)
 
 	if amount <= 0 {
 		response.BadRequest(c, "invalid price for selected duration")
@@ -120,16 +123,16 @@ func (h *OrderHandler) CreateRechargeOrder(c *gin.Context) {
 	}
 
 	order := model.Order{
-		UserID:       userID,
-		PlanID:       0,
-		OrderNo:      fmt.Sprintf("RCH%s%06d", time.Now().In(beijingTZ).Format("20060102150405"), userID),
-		OrderType:    "recharge",
-		Amount:       req.Amount,
+		UserID:         userID,
+		PlanID:         0,
+		OrderNo:        fmt.Sprintf("RCH%s%06d", time.Now().In(beijingTZ).Format("20060102150405"), userID),
+		OrderType:      "recharge",
+		Amount:         req.Amount,
 		OriginalAmount: req.Amount,
-		DurationType: "recharge",
-		PayMethod:    req.PayMethod,
-		PayStatus:    "pending",
-		ExpiresAt:    timePtr(time.Now().In(beijingTZ).Add(30 * time.Minute)),
+		DurationType:   "recharge",
+		PayMethod:      req.PayMethod,
+		PayStatus:      "pending",
+		ExpiresAt:      timePtr(time.Now().In(beijingTZ).Add(30 * time.Minute)),
 	}
 
 	if err := h.db.Create(&order).Error; err != nil {
@@ -142,21 +145,38 @@ func (h *OrderHandler) CreateRechargeOrder(c *gin.Context) {
 
 // processBalancePayment handles balance payment (immediate deduction + plan assignment).
 func (h *OrderHandler) processBalancePayment(c *gin.Context, order *model.Order, userID uint) {
-	var user model.User
-	h.db.First(&user, userID)
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if order.Amount > 0 {
+			result := tx.Model(&model.User{}).
+				Where("id = ? AND balance >= ?", userID, order.Amount).
+				Update("balance", gorm.Expr("balance - ?", order.Amount))
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return errInsufficientBalance
+			}
+		}
 
-	if order.Amount > 0 && user.Balance < order.Amount {
-		// Rollback the pending order
-		h.db.Delete(order)
+		processed, err := h.confirmOrderPaymentTx(tx, order, userID, "")
+		if err != nil {
+			return err
+		}
+		if !processed {
+			return errOrderAlreadyPaid
+		}
+		return nil
+	})
+	if errors.Is(err, errInsufficientBalance) {
+		h.db.Where("id = ? AND pay_status = ?", order.ID, "pending").Delete(&model.Order{})
 		response.BadRequest(c, "insufficient balance")
 		return
 	}
-
-	if order.Amount > 0 {
-		h.db.Model(&user).Update("balance", gorm.Expr("balance - ?", order.Amount))
+	if err != nil {
+		response.InternalError(c, "failed to process balance payment")
+		return
 	}
-
-	h.confirmOrderPayment(order, userID)
+	order.PayStatus = "paid"
 	response.SuccessWithMessage(c, "order paid", order)
 }
 
@@ -207,45 +227,87 @@ func (h *OrderHandler) processExternalPayment(c *gin.Context, order *model.Order
 	})
 }
 
-// confirmOrderPayment marks order as paid and processes post-payment logic.
-func (h *OrderHandler) confirmOrderPayment(order *model.Order, userID uint) {
+// confirmOrderPayment atomically claims a pending order and applies its side effects.
+func (h *OrderHandler) confirmOrderPayment(order *model.Order, userID uint, tradeNo string) (bool, error) {
+	processed := false
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		processed, err = h.confirmOrderPaymentTx(tx, order, userID, tradeNo)
+		return err
+	})
+	return processed, err
+}
+
+func (h *OrderHandler) confirmOrderPaymentTx(tx *gorm.DB, order *model.Order, userID uint, tradeNo string) (bool, error) {
 	now := time.Now().In(beijingTZ)
-	h.db.Model(order).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"pay_status": "paid",
 		"paid_at":    &now,
-	})
+	}
+	if tradeNo != "" {
+		updates["trade_no"] = tradeNo
+	}
+	claim := tx.Model(&model.Order{}).
+		Where("id = ? AND pay_status = ?", order.ID, "pending").
+		Updates(updates)
+	if claim.Error != nil {
+		return false, claim.Error
+	}
+	if claim.RowsAffected != 1 {
+		return false, nil
+	}
 
 	// Increment coupon usage
 	if order.CouponCode != "" {
-		h.db.Model(&model.Coupon{}).Where("code = ?", order.CouponCode).Update("used_count", gorm.Expr("used_count + 1"))
-		h.db.Model(&model.Coupon{}).Where("code = ? AND creator_type = ?", order.CouponCode, "user").Update("refund_status", "used")
+		if err := tx.Model(&model.Coupon{}).Where("code = ?", order.CouponCode).
+			Update("used_count", gorm.Expr("used_count + 1")).Error; err != nil {
+			return false, err
+		}
+		if err := tx.Model(&model.Coupon{}).Where("code = ? AND creator_type = ?", order.CouponCode, "user").
+			Update("refund_status", "used").Error; err != nil {
+			return false, err
+		}
 	}
 
 	// Referral rebate
 	if order.Amount > 0 {
-		h.processReferralRebate(order, userID)
+		if err := h.processReferralRebate(tx, order, userID); err != nil {
+			return false, err
+		}
 	}
 
 	// Assign plan (only for plan orders)
 	if order.OrderType == "plan" && order.PlanID > 0 {
-		h.assignPlan(userID, order.PlanID, order.DurationType, order.ExpiresAt)
+		if err := h.assignPlan(tx, userID, order.PlanID, order.DurationType, order.ExpiresAt); err != nil {
+			return false, err
+		}
 	}
 
 	// Credit balance (only for recharge orders)
 	if order.OrderType == "recharge" {
-		h.db.Model(&model.User{}).Where("id = ?", userID).Update("balance", gorm.Expr("balance + ?", order.Amount))
+		result := tx.Model(&model.User{}).Where("id = ?", userID).
+			Update("balance", gorm.Expr("balance + ?", order.Amount))
+		if result.Error != nil {
+			return false, result.Error
+		}
+		if result.RowsAffected != 1 {
+			return false, gorm.ErrRecordNotFound
+		}
 	}
+	return true, nil
 }
 
-func (h *OrderHandler) processReferralRebate(order *model.Order, userID uint) {
+func (h *OrderHandler) processReferralRebate(tx *gorm.DB, order *model.Order, userID uint) error {
 	var referredUser model.User
-	h.db.Select("id", "invited_by").First(&referredUser, userID)
+	if err := tx.Select("id", "invited_by").First(&referredUser, userID).Error; err != nil {
+		return err
+	}
 	if referredUser.InvitedBy == nil {
-		return
+		return nil
 	}
 
 	level1ID := *referredUser.InvitedBy
-	settings := h.getSettingsMap()
+	settings := h.getSettingsMap(tx)
 	level1Pct := 10.0
 	level2Pct := 5.0
 	if v := settings["invite_rebate_level1_percent"]; v != "" {
@@ -260,44 +322,58 @@ func (h *OrderHandler) processReferralRebate(order *model.Order, userID uint) {
 	var level2ID *uint
 
 	var inviter model.User
-	h.db.Select("id", "invited_by").First(&inviter, level1ID)
+	if err := tx.Select("id", "invited_by").First(&inviter, level1ID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
 	if inviter.InvitedBy != nil {
-		level2ID = inviter.InvitedBy
-		level2Rebate = order.Amount * (level2Pct / 100)
+		var level2 model.User
+		if err := tx.Select("id").First(&level2, *inviter.InvitedBy).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		} else {
+			level2ID = &level2.ID
+			level2Rebate = order.Amount * (level2Pct / 100)
+		}
 	}
 
-	h.db.Transaction(func(tx *gorm.DB) error {
-		tx.Model(&model.User{}).Where("id = ?", level1ID).Update("balance", gorm.Expr("balance + ?", level1Rebate))
-		if level2ID != nil && level2Rebate > 0 {
-			tx.Model(&model.User{}).Where("id = ?", *level2ID).Update("balance", gorm.Expr("balance + ?", level2Rebate))
+	if err := tx.Model(&model.User{}).Where("id = ?", level1ID).
+		Update("balance", gorm.Expr("balance + ?", level1Rebate)).Error; err != nil {
+		return err
+	}
+	if level2ID != nil && level2Rebate > 0 {
+		if err := tx.Model(&model.User{}).Where("id = ?", *level2ID).
+			Update("balance", gorm.Expr("balance + ?", level2Rebate)).Error; err != nil {
+			return err
 		}
-		tx.Create(&model.ReferralRebate{
-			ReferredUserID: userID,
-			OrderID:        order.ID,
-			Level1UserID:   level1ID,
-			Level2UserID:   level2ID,
-			Level1Amount:   level1Rebate,
-			Level2Amount:   level2Rebate,
-		})
-		return nil
-	})
+	}
+	return tx.Create(&model.ReferralRebate{
+		ReferredUserID: userID,
+		OrderID:        order.ID,
+		Level1UserID:   level1ID,
+		Level2UserID:   level2ID,
+		Level1Amount:   level1Rebate,
+		Level2Amount:   level2Rebate,
+	}).Error
 }
 
-func (h *OrderHandler) assignPlan(userID uint, planID uint, durationType string, expiresAt *time.Time) {
-	var days int
-	switch durationType {
-	case "monthly":
-		days = 30
-	case "quarterly":
-		days = 90
-	case "yearly":
-		days = 365
-	default:
-		return
+func (h *OrderHandler) assignPlan(tx *gorm.DB, userID uint, planID uint, durationType string, expiresAt *time.Time) error {
+	var plan model.Plan
+	if err := tx.First(&plan, planID).Error; err != nil {
+		return err
+	}
+	days := planDurationDays(&plan, durationType)
+	if days <= 0 {
+		return fmt.Errorf("invalid plan duration")
 	}
 
 	var existingUser model.User
-	h.db.First(&existingUser, userID)
+	if err := tx.First(&existingUser, userID).Error; err != nil {
+		return err
+	}
 	var newExpiresAt time.Time
 	if existingUser.PlanID != nil && *existingUser.PlanID == planID &&
 		existingUser.PlanExpiresAt != nil && existingUser.PlanExpiresAt.After(time.Now().In(beijingTZ)) {
@@ -308,10 +384,35 @@ func (h *OrderHandler) assignPlan(userID uint, planID uint, durationType string,
 		newExpiresAt = time.Now().In(beijingTZ).AddDate(0, 0, days)
 	}
 
-	h.db.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"plan_id":         planID,
 		"plan_expires_at": newExpiresAt,
-	})
+	}
+	if plan.GroupID != nil {
+		updates["group_id"] = *plan.GroupID
+		updates["group_source"] = "plan"
+	} else if existingUser.GroupSource == "plan" || existingUser.GroupSource == "expired_plan" {
+		updates["group_id"] = nil
+		updates["group_source"] = ""
+	}
+	return tx.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error
+}
+
+func planDurationDays(plan *model.Plan, durationType string) int {
+	baseDays := plan.DurationDays
+	if baseDays <= 0 {
+		baseDays = 30
+	}
+	switch durationType {
+	case "monthly":
+		return baseDays
+	case "quarterly":
+		return baseDays * 3
+	case "yearly":
+		return baseDays * 12
+	default:
+		return 0
+	}
 }
 
 // validateCoupon validates a coupon and returns the discount amount.
@@ -434,11 +535,11 @@ func (h *OrderHandler) RefundOrder(c *gin.Context) {
 		return
 	}
 
-	// Refund to balance
-	h.db.Model(&model.User{}).Where("id = ?", order.UserID).Update("balance", gorm.Expr("balance + ?", order.Amount))
-
-	h.db.Model(&order).Update("pay_status", "refunded")
-	response.SuccessWithMessage(c, "order refunded", nil)
+	if order.PayMethod != "balance" {
+		response.BadRequest(c, "该订单使用外部支付，面板暂不支持自动原路退款，请先在支付渠道完成退款")
+		return
+	}
+	response.BadRequest(c, "余额支付退款需要同时回收套餐、优惠券和返利权益，当前暂不支持自动退款")
 }
 
 // RechargeBalance adds balance to user account (admin only)
@@ -458,27 +559,47 @@ func (h *OrderHandler) RechargeBalance(c *gin.Context) {
 		response.NotFound(c, "user not found")
 		return
 	}
-
-	if err := h.db.Model(&user).Update("balance", gorm.Expr("balance + ?", req.Amount)).Error; err != nil {
-		response.InternalError(c, "failed to recharge balance")
+	if !authorizeManageableUser(c, &user) {
 		return
 	}
 
-	// Create a record order
+	now := time.Now().In(beijingTZ)
 	order := model.Order{
-		UserID:       req.UserID,
-		PlanID:       0,
-		OrderNo:      fmt.Sprintf("RCH%s%06d", time.Now().In(beijingTZ).Format("20060102150405"), req.UserID),
-		OrderType:    "recharge",
-		Amount:       req.Amount,
-		DurationType: "recharge",
-		PayMethod:    "admin",
-		PayStatus:    "paid",
+		UserID:         req.UserID,
+		PlanID:         0,
+		OrderNo:        fmt.Sprintf("RCH%s%06d", now.Format("20060102150405.000000000"), req.UserID),
+		OrderType:      "recharge",
+		Amount:         req.Amount,
+		OriginalAmount: req.Amount,
+		DurationType:   "recharge",
+		PayMethod:      "admin",
+		PayStatus:      "paid",
+		PaidAt:         &now,
 	}
-	h.db.Create(&order)
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&order).Error; err != nil {
+			return err
+		}
+		result := tx.Model(&model.User{}).Where("id = ?", req.UserID).
+			Update("balance", gorm.Expr("balance + ?", req.Amount))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	}); err != nil {
+		response.InternalError(c, "failed to recharge balance")
+		return
+	}
+	if err := h.db.First(&user, req.UserID).Error; err != nil {
+		response.InternalError(c, "failed to load updated balance")
+		return
+	}
 
 	response.SuccessWithMessage(c, "balance recharged", gin.H{
-		"new_balance": user.Balance + req.Amount,
+		"new_balance": user.Balance,
 	})
 }
 
@@ -486,9 +607,9 @@ func timePtr(t time.Time) *time.Time {
 	return &t
 }
 
-func (h *OrderHandler) getSettingsMap() map[string]string {
+func (h *OrderHandler) getSettingsMap(db *gorm.DB) map[string]string {
 	var settings []model.Setting
-	h.db.Find(&settings)
+	db.Find(&settings)
 	result := make(map[string]string)
 	for _, s := range settings {
 		result[s.Key] = s.Value

@@ -6,6 +6,7 @@ import (
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
 	"github.com/frp-panel/frp-panel/internal/pkg/frpconfig"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -60,19 +61,37 @@ func NewProxyHandler(db *gorm.DB) *ProxyHandler {
 	return &ProxyHandler{db: db}
 }
 
+func (h *ProxyHandler) requireServerAccess(c *gin.Context, userID, serverID uint) bool {
+	user, err := accesscontrol.LoadUser(h.db, userID)
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return false
+	}
+	allowed, err := accesscontrol.CanAccessServer(h.db, user, serverID)
+	if err != nil {
+		response.InternalError(c, "failed to check server access")
+		return false
+	}
+	if !allowed {
+		response.Forbidden(c, "当前用户组不能使用该节点")
+		return false
+	}
+	return true
+}
+
 type CreateProxyRequest struct {
-	ServerID        uint   `json:"server_id" binding:"required"`
-	Name            string `json:"name" binding:"required"`
-	Type            string `json:"type" binding:"required,oneof=tcp udp http https stcp xtcp"`
-	LocalIP         string `json:"local_ip"`
-	LocalPort       int    `json:"local_port" binding:"required"`
-	RemotePort      int    `json:"remote_port"`
-	CustomDomains   []string `json:"custom_domains"`
-	Subdomain       string `json:"subdomain"`
-	SecretKey       string `json:"secret_key"`
-	UseEncryption   bool   `json:"use_encryption"`
-	UseCompression  bool   `json:"use_compression"`
-	BandwidthLimit  int64  `json:"bandwidth_limit"`
+	ServerID       uint     `json:"server_id" binding:"required"`
+	Name           string   `json:"name" binding:"required"`
+	Type           string   `json:"type" binding:"required,oneof=tcp udp http https stcp xtcp"`
+	LocalIP        string   `json:"local_ip"`
+	LocalPort      int      `json:"local_port" binding:"required"`
+	RemotePort     int      `json:"remote_port"`
+	CustomDomains  []string `json:"custom_domains"`
+	Subdomain      string   `json:"subdomain"`
+	SecretKey      string   `json:"secret_key"`
+	UseEncryption  bool     `json:"use_encryption"`
+	UseCompression bool     `json:"use_compression"`
+	BandwidthLimit int64    `json:"bandwidth_limit"`
 }
 
 func (h *ProxyHandler) CreateProxy(c *gin.Context) {
@@ -104,28 +123,29 @@ func (h *ProxyHandler) CreateProxy(c *gin.Context) {
 	}
 
 	// Check user quota
-	var user model.User
-	h.db.First(&user, userID)
-	var maxBandwidth int64
+	user, err := accesscontrol.LoadUser(h.db, userID)
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+	allowed, err := accesscontrol.CanAccessServer(h.db, user, req.ServerID)
+	if err != nil {
+		response.InternalError(c, "failed to check server access")
+		return
+	}
+	if !allowed {
+		response.Forbidden(c, "当前用户组不能使用该节点")
+		return
+	}
+	maxBandwidth := accesscontrol.EffectiveBandwidth(h.db, user)
 	if user.PlanID != nil {
 		var plan model.Plan
-		h.db.First(&plan, user.PlanID)
+		h.db.First(&plan, *user.PlanID)
 		var currentProxies int64
 		h.db.Model(&model.Proxy{}).Where("user_id = ?", userID).Count(&currentProxies)
 		if int(currentProxies) >= plan.MaxProxies {
 			response.BadRequest(c, fmt.Sprintf("proxy limit reached (%d/%d)", currentProxies, plan.MaxProxies))
 			return
-		}
-		maxBandwidth = plan.MaxBandwidth
-	} else {
-		// Free tier: read from settings
-		var setting model.Setting
-		if err := h.db.Where("key = ?", "free_max_bandwidth_mb").First(&setting).Error; err == nil {
-			var mb float64
-			fmt.Sscanf(setting.Value, "%f", &mb)
-			maxBandwidth = int64(mb * 1024 * 1024)
-		} else {
-			maxBandwidth = 10 * 1024 * 1024 // default 10MB/s
 		}
 	}
 
@@ -214,6 +234,18 @@ func (h *ProxyHandler) ListProxies(c *gin.Context) {
 	var total int64
 
 	query := h.db.Model(&model.Proxy{}).Where("user_id = ?", userID)
+	user, err := accesscontrol.LoadUser(h.db, userID)
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+	if accesscontrol.IsPlanGroupExpired(user) {
+		query = query.Where("1 = 0")
+	} else if user.GroupID != nil {
+		query = query.Where("server_id IN (?)", h.db.Table("user_group_servers AS ugs").
+			Select("ugs.server_id").Joins("JOIN servers AS s ON s.id = ugs.server_id AND s.deleted_at IS NULL").
+			Where("ugs.user_group_id = ? AND s.plugin_auth_enabled = ?", *user.GroupID, true))
+	}
 	if serverID != "" {
 		query = query.Where("server_id = ?", serverID)
 	}
@@ -241,6 +273,9 @@ func (h *ProxyHandler) GetProxy(c *gin.Context) {
 		response.NotFound(c, "proxy not found")
 		return
 	}
+	if !h.requireServerAccess(c, userID, proxy.ServerID) {
+		return
+	}
 
 	response.Success(c, proxy)
 }
@@ -254,17 +289,20 @@ func (h *ProxyHandler) UpdateProxy(c *gin.Context) {
 		response.NotFound(c, "proxy not found")
 		return
 	}
+	if !h.requireServerAccess(c, userID, proxy.ServerID) {
+		return
+	}
 
 	var req struct {
-		LocalIP         string   `json:"local_ip"`
-		LocalPort       int      `json:"local_port"`
-		RemotePort      int      `json:"remote_port"`
-		CustomDomains   []string `json:"custom_domains"`
-		Subdomain       string   `json:"subdomain"`
-		SecretKey       string   `json:"secret_key"`
-		UseEncryption   *bool    `json:"use_encryption"`
-		UseCompression  *bool    `json:"use_compression"`
-		BandwidthLimit  int64    `json:"bandwidth_limit"`
+		LocalIP        string   `json:"local_ip"`
+		LocalPort      int      `json:"local_port"`
+		RemotePort     int      `json:"remote_port"`
+		CustomDomains  []string `json:"custom_domains"`
+		Subdomain      string   `json:"subdomain"`
+		SecretKey      string   `json:"secret_key"`
+		UseEncryption  *bool    `json:"use_encryption"`
+		UseCompression *bool    `json:"use_compression"`
+		BandwidthLimit int64    `json:"bandwidth_limit"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -303,23 +341,12 @@ func (h *ProxyHandler) UpdateProxy(c *gin.Context) {
 	}
 	if req.BandwidthLimit > 0 {
 		// Validate bandwidth against plan
-		var proxyUser model.User
-		h.db.First(&proxyUser, proxy.UserID)
-		var maxBandwidth int64
-		if proxyUser.PlanID != nil {
-			var plan model.Plan
-			h.db.First(&plan, proxyUser.PlanID)
-			maxBandwidth = plan.MaxBandwidth
-		} else {
-			var setting model.Setting
-			if err := h.db.Where("key = ?", "free_max_bandwidth_mb").First(&setting).Error; err == nil {
-				var mb float64
-				fmt.Sscanf(setting.Value, "%f", &mb)
-				maxBandwidth = int64(mb * 1024 * 1024)
-			} else {
-				maxBandwidth = 10 * 1024 * 1024
-			}
+		proxyUser, err := accesscontrol.LoadUser(h.db, proxy.UserID)
+		if err != nil {
+			response.NotFound(c, "user not found")
+			return
 		}
+		maxBandwidth := accesscontrol.EffectiveBandwidth(h.db, proxyUser)
 		if maxBandwidth > 0 && req.BandwidthLimit > maxBandwidth {
 			response.BadRequest(c, fmt.Sprintf("带宽限制超过套餐上限（最大 %d KB/s）", maxBandwidth/1024))
 			return
@@ -344,6 +371,9 @@ func (h *ProxyHandler) DeleteProxy(c *gin.Context) {
 		response.NotFound(c, "proxy not found")
 		return
 	}
+	if !h.requireServerAccess(c, userID, proxy.ServerID) {
+		return
+	}
 
 	if err := h.db.Delete(&proxy).Error; err != nil {
 		response.InternalError(c, "failed to delete proxy")
@@ -362,6 +392,9 @@ func (h *ProxyHandler) EnableProxy(c *gin.Context) {
 		response.NotFound(c, "proxy not found")
 		return
 	}
+	if !h.requireServerAccess(c, userID, proxy.ServerID) {
+		return
+	}
 
 	h.db.Model(&proxy).Update("enabled", true)
 	response.SuccessWithMessage(c, "proxy enabled", nil)
@@ -374,6 +407,9 @@ func (h *ProxyHandler) DisableProxy(c *gin.Context) {
 	var proxy model.Proxy
 	if err := h.db.Where("id = ? AND user_id = ?", proxyID, userID).First(&proxy).Error; err != nil {
 		response.NotFound(c, "proxy not found")
+		return
+	}
+	if !h.requireServerAccess(c, userID, proxy.ServerID) {
 		return
 	}
 
@@ -396,22 +432,37 @@ func (h *ProxyHandler) GetFrpcConfig(c *gin.Context) {
 		}
 		return
 	}
+	if !server.PluginAuthEnabled {
+		response.BadRequest(c, "该节点需要由管理员重新部署后才能生成安全配置")
+		return
+	}
+
+	user, err := accesscontrol.LoadUser(h.db, userID)
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+	allowed, err := accesscontrol.CanAccessServer(h.db, user, server.ID)
+	if err != nil {
+		response.InternalError(c, "failed to check server access")
+		return
+	}
+	if !allowed {
+		response.Forbidden(c, "当前用户组不能使用该节点")
+		return
+	}
 
 	// Get user's proxies on this server
 	var proxies []model.Proxy
-	h.db.Where("user_id = ? AND server_id = ?", userID, serverID).Find(&proxies)
+	h.db.Where("user_id = ? AND server_id = ? AND enabled = ?", userID, serverID, true).Find(&proxies)
 
 	if len(proxies) == 0 {
 		response.BadRequest(c, "no proxies found on this server")
 		return
 	}
 
-	// Get user
-	var user model.User
-	h.db.First(&user, userID)
-
 	// Generate frpc config
-	config, err := frpconfig.GenerateFrpcConfig(&server, &user, proxies)
+	config, err := frpconfig.GenerateFrpcConfig(&server, user, proxies)
 	if err != nil {
 		response.InternalError(c, "failed to generate config")
 		return
@@ -458,8 +509,57 @@ func (h *ProxyHandler) AdminListProxies(c *gin.Context) {
 	response.Page(c, proxies, total, parseInt(page), parseInt(size))
 }
 
+func (h *ProxyHandler) AdminEnableProxy(c *gin.Context) {
+	proxy, ok := h.loadAdminProxy(c)
+	if !ok {
+		return
+	}
+	if err := h.db.Model(proxy).Update("enabled", true).Error; err != nil {
+		response.InternalError(c, "failed to enable proxy")
+		return
+	}
+	response.SuccessWithMessage(c, "代理已启用", nil)
+}
+
+func (h *ProxyHandler) AdminDisableProxy(c *gin.Context) {
+	proxy, ok := h.loadAdminProxy(c)
+	if !ok {
+		return
+	}
+	if err := h.db.Model(proxy).Update("enabled", false).Error; err != nil {
+		response.InternalError(c, "failed to disable proxy")
+		return
+	}
+	response.SuccessWithMessage(c, "代理已禁用", nil)
+}
+
+func (h *ProxyHandler) AdminDeleteProxy(c *gin.Context) {
+	proxy, ok := h.loadAdminProxy(c)
+	if !ok {
+		return
+	}
+	if err := h.db.Delete(proxy).Error; err != nil {
+		response.InternalError(c, "failed to delete proxy")
+		return
+	}
+	response.SuccessWithMessage(c, "代理已删除", nil)
+}
+
+func (h *ProxyHandler) loadAdminProxy(c *gin.Context) (*model.Proxy, bool) {
+	var proxy model.Proxy
+	if err := h.db.Preload("User").First(&proxy, c.Param("id")).Error; err != nil {
+		response.NotFound(c, "proxy not found")
+		return nil, false
+	}
+	if !authorizeManageableUser(c, &proxy.User) {
+		return nil, false
+	}
+	return &proxy, true
+}
+
 // GetServerPorts returns used ports and server's own ports for a given server
 func (h *ProxyHandler) GetServerPorts(c *gin.Context) {
+	userID := c.MustGet("user_id").(uint)
 	serverID := c.Param("server_id")
 
 	var server model.Server
@@ -469,6 +569,20 @@ func (h *ProxyHandler) GetServerPorts(c *gin.Context) {
 		} else {
 			response.InternalError(c, fmt.Sprintf("database error: %v", err))
 		}
+		return
+	}
+	user, err := accesscontrol.LoadUser(h.db, userID)
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+	allowed, err := accesscontrol.CanAccessServer(h.db, user, server.ID)
+	if err != nil {
+		response.InternalError(c, "failed to check server access")
+		return
+	}
+	if !allowed {
+		response.Forbidden(c, "当前用户组不能使用该节点")
 		return
 	}
 

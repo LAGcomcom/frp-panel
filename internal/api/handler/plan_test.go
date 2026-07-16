@@ -3,6 +3,8 @@ package handler
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/frp-panel/frp-panel/internal/model"
 )
 
 func TestCreatePlanRequestAcceptsNumericAndStringPrices(t *testing.T) {
@@ -26,6 +28,18 @@ func TestCreatePlanRequestAcceptsNumericAndStringPrices(t *testing.T) {
 	}
 	if got := float64(req.PriceYearly); got != 2.44 {
 		t.Fatalf("price_yearly = %v, want 2.44", got)
+	}
+}
+
+func TestPlanDurationDaysUsesConfiguredBaseDuration(t *testing.T) {
+	plan := &model.Plan{DurationDays: 15}
+	for durationType, want := range map[string]int{"monthly": 15, "quarterly": 45, "yearly": 180} {
+		if got := planDurationDays(plan, durationType); got != want {
+			t.Errorf("planDurationDays(%s) = %d, want %d", durationType, got, want)
+		}
+	}
+	if got := planDurationDays(&model.Plan{}, "monthly"); got != 30 {
+		t.Fatalf("legacy zero duration fallback = %d, want 30", got)
 	}
 }
 

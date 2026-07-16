@@ -36,11 +36,6 @@
       <el-table-column prop="created_at" label="创建时间" width="170">
         <template #default="{ row }">{{ new Date(row.created_at).toLocaleString('zh-CN') }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="100">
-        <template #default="{ row }">
-          <el-button v-if="row.pay_status === 'paid'" size="small" type="danger" @click="handleRefund(row)">退款</el-button>
-        </template>
-      </el-table-column>
     </el-table>
 
     <el-pagination
@@ -55,8 +50,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getOrders, refundOrder } from '../../api'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { getOrders } from '../../api'
 
 const orders = ref<any[]>([])
 const loading = ref(false)
@@ -81,12 +75,6 @@ async function fetchData() {
   }
 }
 
-async function handleRefund(row: any) {
-  await ElMessageBox.confirm(`确认向 ${row.user?.email} 退款 &yen;${row.amount?.toFixed(2)}？`, '确认退款')
-  await refundOrder(row.id)
-  ElMessage.success('退款成功')
-  fetchData()
-}
 </script>
 
 <style scoped>

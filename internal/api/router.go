@@ -4,7 +4,6 @@ import (
 	"github.com/frp-panel/frp-panel/internal/api/handler"
 	"github.com/frp-panel/frp-panel/internal/api/middleware"
 	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
-	"github.com/frp-panel/frp-panel/internal/pkg/license"
 	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/frp-panel/frp-panel/internal/service/monitor"
 	updateservice "github.com/frp-panel/frp-panel/internal/service/update"
@@ -12,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Deployer, alertManager *monitor.AlertManager, serverToken string, licenseManager *license.Manager, updateClient *updateservice.Client) *gin.Engine {
+func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Deployer, alertManager *monitor.AlertManager, serverToken string, updateClient *updateservice.Client) *gin.Engine {
 	r := gin.Default()
 
 	// Disable trailing slash redirect to allow middleware to handle SPA routes
@@ -21,11 +20,8 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 	// CORS
 	r.Use(corsMiddleware())
 
-	// License enforcement middleware - blocks all routes until license is activated
-	r.Use(middleware.LicenseRequired(licenseManager))
-
 	// SPA middleware - must be registered before routes
-	registerStaticRoutes(r, licenseManager)
+	registerStaticRoutes(r)
 
 	// Health check (always available)
 	r.GET("/healthz", func(c *gin.Context) {
@@ -34,6 +30,7 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 
 	// Handlers
 	userHandler := handler.NewUserHandler(db, jwtManager)
+	userGroupHandler := handler.NewUserGroupHandler(db)
 	serverHandler := handler.NewServerHandler(db, deployer, serverToken)
 	proxyHandler := handler.NewProxyHandler(db)
 	planHandler := handler.NewPlanHandler(db)
@@ -43,7 +40,6 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 	trafficHandler := handler.NewTrafficHandler(db)
 	wsHandler := handler.NewWebSocketHandler(db)
 	alertHandler := handler.NewAlertHandler(db, alertManager)
-	licenseHandler := handler.NewLicenseHandler(licenseManager)
 
 	// Wire up WebSocket notifications
 	alertManager.SetNotifyFunc(wsHandler.NotifyUser)
@@ -56,16 +52,11 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 
 	// WebSocket
 	r.GET("/ws", wsHandler.HandleWebSocket)
-	r.GET("/ws/user", middleware.JWTAuth(jwtManager), wsHandler.HandleUserWebSocket)
+	r.GET("/ws/user", middleware.JWTAuth(jwtManager, db), wsHandler.HandleUserWebSocket)
 
 	// Public routes
 	api := r.Group("/api")
 	{
-		// License management (no JWT required, but license middleware allows these)
-		api.POST("/license/activate", licenseHandler.Activate)
-		api.GET("/license/status", licenseHandler.Status)
-		api.GET("/license/device-id", licenseHandler.DeviceID)
-
 		api.POST("/user/register", userHandler.Register)
 		api.POST("/user/send-code", userHandler.SendVerificationCode)
 		api.POST("/user/login", userHandler.Login)
@@ -73,9 +64,11 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 		api.GET("/plans", planHandler.ListPlans)
 		api.GET("/plans/:id", planHandler.GetPlan)
 
-		// Plugin webhook (no auth, authenticated by plugin_secret)
+		// Legacy webhook remains for existing nodes; redeployed nodes use the
+		// server-specific path authenticated by plugin_secret below.
 		api.POST("/plugin/webhook", pluginHandler.HandleWebhook)
 		api.POST("/plugin/webhook/", pluginHandler.HandleWebhook)
+		api.POST("/plugin/webhook/:server_id/:plugin_secret", pluginHandler.HandleServerWebhook)
 
 		// Agent metrics reporting (authenticated by agent API key in header)
 		api.POST("/servers/:id/metrics", serverHandler.ReportMetrics)
@@ -91,12 +84,12 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 		api.GET("/pay/notify/:type", paymentHandler.PayNotify)
 
 		// Coupon verify (authenticated users)
-		api.POST("/coupons/verify", middleware.JWTAuth(jwtManager), couponHandler.VerifyCoupon)
+		api.POST("/coupons/verify", middleware.JWTAuth(jwtManager, db), couponHandler.VerifyCoupon)
 	}
 
 	// Authenticated user routes
 	user := api.Group("")
-	user.Use(middleware.JWTAuth(jwtManager))
+	user.Use(middleware.JWTAuth(jwtManager, db))
 	{
 		user.GET("/user/profile", userHandler.GetProfile)
 		user.PUT("/user/profile", userHandler.UpdateProfile)
@@ -144,7 +137,7 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 
 	// Admin routes
 	admin := api.Group("/admin")
-	admin.Use(middleware.JWTAuth(jwtManager), middleware.AdminRequired())
+	admin.Use(middleware.JWTAuth(jwtManager, db), middleware.AdminRequired())
 	{
 		// Dashboard
 		admin.GET("/dashboard", dashboardHandler.GetDashboard)
@@ -153,8 +146,16 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 		admin.GET("/users", userHandler.ListUsers)
 		admin.GET("/users/:id", userHandler.GetUser)
 		admin.PUT("/users/:id", userHandler.AdminUpdateUser)
+		admin.POST("/users/:id/plan", userHandler.AdminAssignPlan)
+		admin.DELETE("/users/:id/plan", userHandler.AdminClearPlan)
 		admin.POST("/users/:id/ban", userHandler.BanUser)
 		admin.POST("/users/:id/unban", userHandler.UnbanUser)
+
+		// User groups and node access
+		admin.GET("/user-groups", userGroupHandler.List)
+		admin.POST("/user-groups", userGroupHandler.Create)
+		admin.PUT("/user-groups/:id", userGroupHandler.Update)
+		admin.DELETE("/user-groups/:id", userGroupHandler.Delete)
 
 		// Servers
 		admin.POST("/servers", serverHandler.CreateServer)
@@ -188,6 +189,9 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 
 		// Proxies (admin view)
 		admin.GET("/proxies", proxyHandler.AdminListProxies)
+		admin.POST("/proxies/:id/enable", proxyHandler.AdminEnableProxy)
+		admin.POST("/proxies/:id/disable", proxyHandler.AdminDisableProxy)
+		admin.DELETE("/proxies/:id", proxyHandler.AdminDeleteProxy)
 
 		// Traffic (admin view)
 		admin.GET("/traffic/stats", trafficHandler.AdminGetTrafficStats)

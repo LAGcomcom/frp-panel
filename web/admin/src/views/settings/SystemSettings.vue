@@ -97,7 +97,7 @@
             <template #append>个</template>
           </el-input>
         </el-form-item>
-        <el-form-item label="带宽限制">
+        <el-form-item label="单代理带宽上限">
           <el-input v-model="form.free_max_bandwidth_mb" placeholder="10" style="width: 200px">
             <template #append>MB/s</template>
           </el-input>

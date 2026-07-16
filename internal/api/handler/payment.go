@@ -120,13 +120,12 @@ func (h *PaymentHandler) PayNotify(c *gin.Context) {
 		return
 	}
 
-	// Update trade_no
-	if result.TradeNo != "" {
-		h.db.Model(&order).Update("trade_no", result.TradeNo)
+	// Claiming the pending order and applying all entitlements happens in one
+	// transaction, so concurrent duplicate callbacks cannot credit twice.
+	if _, err := h.orderHandler.confirmOrderPayment(&order, order.UserID, result.TradeNo); err != nil {
+		c.String(500, "payment confirmation failed")
+		return
 	}
-
-	// Confirm the payment
-	h.orderHandler.confirmOrderPayment(&order, order.UserID)
 
 	c.String(200, "success")
 }

@@ -17,6 +17,33 @@ func TestBuildDownloadURLs(t *testing.T) {
 	}
 }
 
+func TestBuildPluginEndpointUsesNodeSpecificSecretPath(t *testing.T) {
+	addr, path, err := buildPluginEndpoint("https://panel.example.com/api/plugin/webhook", 42, "secret-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "https://panel.example.com" || path != "/api/plugin/webhook/42/secret-value" {
+		t.Fatalf("plugin endpoint = %q %q", addr, path)
+	}
+}
+
+func TestBuildPluginEndpointRequiresTLSForPublicHosts(t *testing.T) {
+	if _, _, err := buildPluginEndpoint("http://panel.example.com/api/plugin/webhook", 1, "secret"); err == nil {
+		t.Fatal("public HTTP webhook was accepted")
+	}
+	addr, _, err := buildPluginEndpoint("http://127.0.0.1:8080/api/plugin/webhook", 1, "secret")
+	if err != nil || addr != "http://127.0.0.1:8080" {
+		t.Fatalf("loopback HTTP webhook = %q err=%v", addr, err)
+	}
+	addr, _, err = buildPluginEndpoint("panel.example.com/api/plugin/webhook", 1, "secret")
+	if err != nil || addr != "https://panel.example.com" {
+		t.Fatalf("scheme-less public webhook = %q err=%v", addr, err)
+	}
+	if !strings.Contains(frpsTomlTemplate, "tlsVerify = true") {
+		t.Fatal("FRPS plugin TLS certificate verification is not enabled")
+	}
+}
+
 func TestRenderInstallScriptIsNonDestructiveUntilVerified(t *testing.T) {
 	script, err := renderInstallScript("0.68.0", "https://mirror.example.com")
 	if err != nil {

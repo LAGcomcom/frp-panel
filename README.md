@@ -31,6 +31,13 @@ curl -fsSL https://github.com/LAGcomcom/frp-panel/releases/latest/download/insta
   sudo FRP_PANEL_PORT=8080 FRP_PANEL_ADMIN_EMAIL=admin@example.com sh
 ```
 
+交互安装会询问是否启用签名存活上报。无人值守安装可明确开启，并提供面板域名：
+
+```sh
+curl -fsSL https://github.com/LAGcomcom/frp-panel/releases/latest/download/install.sh | \
+  sudo FRP_PANEL_HEARTBEAT_ENABLED=true FRP_PANEL_DOMAIN=panel.example.com sh -s -- --install
+```
+
 卸载只删除服务和程序文件，配置与数据库默认保留，重新安装后可以继续使用。
 
 ## 无人值守
@@ -53,7 +60,7 @@ sudo sh install.sh --uninstall --yes
 make build-linux
 ```
 
-构建会先生成管理端和用户端静态资源，再把许可证页及 Linux Agent 嵌入面板二进制。配置示例见 `config.example.yaml`。
+构建会先生成管理端和用户端静态资源，再把 Linux Agent 嵌入面板二进制。公开版不包含运行时许可证门。配置示例见 `config.example.yaml`。
 
 ## Docker
 

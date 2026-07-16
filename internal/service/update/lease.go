@@ -59,12 +59,115 @@ type manifestAsset struct {
 }
 
 func (c *Client) Start(parent context.Context) {
-	c.startOnce.Do(func() { ctx, cancel := context.WithCancel(parent); c.cancel = cancel; go c.renewLoop(ctx) })
+	c.startOnce.Do(func() {
+		if !c.heartbeatEnabled() || (c.centerURL() == "" && len(c.cfg.BootstrapURLs) == 0) || c.cfg.PanelDomain == "" || c.cfg.PanelVersion == "" {
+			return
+		}
+		ctx, cancel := context.WithCancel(parent)
+		c.mu.Lock()
+		c.cancel = cancel
+		c.mu.Unlock()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.heartbeatLoop(ctx)
+		}()
+	})
 }
 func (c *Client) Stop() {
-	if c.cancel != nil {
-		c.cancel()
+	c.mu.RLock()
+	cancel := c.cancel
+	c.mu.RUnlock()
+	if cancel != nil {
+		cancel()
 	}
+	c.wg.Wait()
+}
+
+func (c *Client) heartbeatEnabled() bool {
+	return c.cfg.HeartbeatEnabled || c.cfg.AnonymousStatistics || c.cfg.Enabled
+}
+
+func (c *Client) heartbeatInterval() time.Duration {
+	interval := c.cfg.HeartbeatInterval
+	if interval == 0 {
+		interval = 5 * time.Second
+	}
+	if interval < 5*time.Second {
+		return 5 * time.Second
+	}
+	return interval
+}
+
+func (c *Client) heartbeatLoop(ctx context.Context) {
+	registered := false
+	retry := time.Second
+	nextBootstrapRefresh := time.Time{}
+	for {
+		if c.cfg.ControlPublicKey != "" && time.Now().After(nextBootstrapRefresh) {
+			_ = c.refreshBootstrap(ctx)
+			nextBootstrapRefresh = time.Now().Add(time.Hour)
+		}
+		if !registered {
+			priv, pub, err := c.identity()
+			if err == nil {
+				err = c.registerPublic(ctx, priv, pub)
+			}
+			if err == nil || strings.Contains(err.Error(), "409") {
+				registered = true
+			}
+		}
+
+		err := errors.New("instance registration failed")
+		if registered {
+			err = c.sendHeartbeat(ctx)
+		}
+		wait := c.heartbeatInterval()
+		if err != nil {
+			wait = retry + randomJitter(retry/4)
+			retry = min(retry*2, time.Minute)
+		} else {
+			retry = time.Second
+		}
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
+	}
+}
+
+func (c *Client) sendHeartbeat(ctx context.Context) error {
+	priv, _, err := c.identity()
+	if err != nil {
+		return err
+	}
+	id, err := c.ensureInstanceID()
+	if err != nil {
+		return err
+	}
+	domain := normalizedHost(c.cfg.PanelDomain)
+	nonce := randomNonce()
+	message := strings.Join([]string{id, domain, c.cfg.PanelVersion, runtime.GOOS, runtime.GOARCH, nonce}, "\n")
+	return c.postRaw(ctx, "/api/v1/heartbeat", map[string]string{
+		"id": id, "domain": domain, "version": c.cfg.PanelVersion,
+		"os": runtime.GOOS, "arch": runtime.GOARCH, "nonce": nonce,
+		"signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(message))),
+	}, nil, nil)
+}
+
+func randomJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0
+	}
+	return time.Duration(n.Int64())
 }
 
 func (c *Client) FeatureAvailable(name string) bool {
@@ -92,10 +195,7 @@ func (c *Client) LeaseStatus() *Lease {
 }
 
 func (c *Client) Download(ctx context.Context, version string) (string, string, error) {
-	if !c.FeatureAvailable("private_updates") {
-		return "", "", errors.New("private updates require an active lease")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.baseURL, "/")+"/api/v1/releases/"+url.PathEscape(version)+"/manifest", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.centerURL()+"/api/v1/releases/"+url.PathEscape(version)+"/manifest", nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -129,13 +229,18 @@ func (c *Client) Download(ctx context.Context, version string) (string, string, 
 	if err != nil {
 		return "", "", err
 	}
-	nonce := randomNonce()
-	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(strings.Join([]string{c.instanceID, version, asset.Name, nonce}, "\n"))))
-	downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.DownloadURL, nil)
+	id, err := c.ensureInstanceID()
 	if err != nil {
 		return "", "", err
 	}
-	downloadReq.Header.Set("X-Instance-ID", c.instanceID)
+	nonce := randomNonce()
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(strings.Join([]string{id, version, asset.Name, nonce}, "\n"))))
+	downloadURL := c.centerURL() + "/api/v1/public/releases/" + url.PathEscape(version) + "/download/" + url.PathEscape(asset.Name)
+	downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	downloadReq.Header.Set("X-Instance-ID", id)
 	downloadReq.Header.Set("X-Nonce", nonce)
 	downloadReq.Header.Set("X-Signature", signature)
 	downloadResp, err := c.http.Do(downloadReq)
@@ -197,28 +302,32 @@ func (c *Client) renewLoop(ctx context.Context) {
 	}
 }
 func (c *Client) renew(ctx context.Context) error {
-	if err := c.refreshBootstrap(ctx); err != nil && c.baseURL == "" {
+	if err := c.refreshBootstrap(ctx); err != nil && c.centerURL() == "" {
 		return err
 	}
 	priv, pub, err := c.identity()
 	if err != nil {
 		return err
 	}
-	if err = c.register(ctx, priv, pub); err != nil && !strings.Contains(err.Error(), "409") {
+	if err = c.registerPrivate(ctx, priv, pub); err != nil && !strings.Contains(err.Error(), "409") {
+		return err
+	}
+	id, err := c.ensureInstanceID()
+	if err != nil {
 		return err
 	}
 	nonce := randomNonce()
-	message := strings.Join([]string{c.instanceID, normalizedHost(c.cfg.PanelDomain), c.cfg.PanelVersion, nonce}, "\n")
+	message := strings.Join([]string{id, normalizedHost(c.cfg.PanelDomain), c.cfg.PanelVersion, nonce}, "\n")
 	sig := ed25519.Sign(priv, []byte(message))
 	var env envelope
-	if err = c.postRaw(ctx, "/api/v1/lease/renew", map[string]string{"id": c.instanceID, "domain": c.cfg.PanelDomain, "version": c.cfg.PanelVersion, "nonce": nonce, "signature": base64.StdEncoding.EncodeToString(sig)}, &env, nil); err != nil {
+	if err = c.postRaw(ctx, "/api/v1/lease/renew", map[string]string{"id": id, "domain": c.cfg.PanelDomain, "version": c.cfg.PanelVersion, "nonce": nonce, "signature": base64.StdEncoding.EncodeToString(sig)}, &env, nil); err != nil {
 		return err
 	}
 	var lease Lease
 	if err = c.verifyEnvelope(env, &lease); err != nil {
 		return err
 	}
-	if lease.InstanceID != c.instanceID || normalizedHost(lease.Domain) != normalizedHost(c.cfg.PanelDomain) {
+	if lease.InstanceID != id || normalizedHost(lease.Domain) != normalizedHost(c.cfg.PanelDomain) {
 		return errors.New("lease identity mismatch")
 	}
 	c.mu.Lock()
@@ -226,13 +335,25 @@ func (c *Client) renew(ctx context.Context) error {
 	c.mu.Unlock()
 	return c.saveLease(env)
 }
-func (c *Client) register(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
+func (c *Client) registerPublic(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
+	return c.register(ctx, priv, pub, "/api/v1/public/instances/register", nil)
+}
+
+func (c *Client) registerPrivate(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
+	return c.register(ctx, priv, pub, "/api/v1/instances/register", map[string]string{"X-Enrollment-Token": c.cfg.InstanceKey})
+}
+
+func (c *Client) register(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey, path string, headers map[string]string) error {
+	id, err := c.ensureInstanceID()
+	if err != nil {
+		return err
+	}
 	nonce := randomNonce()
 	pubText := base64.StdEncoding.EncodeToString(pub)
 	domain := normalizedHost(c.cfg.PanelDomain)
-	message := strings.Join([]string{c.instanceID, domain, c.cfg.PanelVersion, pubText, nonce}, "\n")
-	payload := map[string]string{"id": c.instanceID, "domain": domain, "version": c.cfg.PanelVersion, "publickey": pubText, "nonce": nonce, "signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(message)))}
-	return c.postRaw(ctx, "/api/v1/instances/register", payload, nil, map[string]string{"X-Enrollment-Token": c.cfg.InstanceKey})
+	message := strings.Join([]string{id, domain, c.cfg.PanelVersion, pubText, nonce}, "\n")
+	payload := map[string]string{"id": id, "domain": domain, "version": c.cfg.PanelVersion, "os": runtime.GOOS, "arch": runtime.GOARCH, "publickey": pubText, "nonce": nonce, "signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(message)))}
+	return c.postRaw(ctx, path, payload, nil, headers)
 }
 func (c *Client) refreshBootstrap(ctx context.Context) error {
 	urls := append([]string(nil), c.cfg.BootstrapURLs...)
@@ -272,7 +393,7 @@ func (c *Client) refreshBootstrap(ctx context.Context) error {
 			last = errors.New("bootstrap update API must use HTTPS")
 			continue
 		}
-		c.baseURL = strings.TrimRight(b.UpdateAPI, "/")
+		c.setCenterURL(b.UpdateAPI)
 		_ = c.saveBootstrap(env)
 		return nil
 	}
@@ -315,7 +436,7 @@ func (c *Client) loadCachedBootstrap() error {
 	if err != nil || u.Scheme != "https" && u.Hostname() != "127.0.0.1" {
 		return errors.New("cached bootstrap URL invalid")
 	}
-	c.baseURL = strings.TrimRight(v.UpdateAPI, "/")
+	c.setCenterURL(v.UpdateAPI)
 	return nil
 }
 func (c *Client) verifyEnvelope(env envelope, out any) error {
@@ -330,6 +451,8 @@ func (c *Client) verifyEnvelope(env envelope, out any) error {
 	return json.Unmarshal(env.Payload, out)
 }
 func (c *Client) identity() (ed25519.PrivateKey, ed25519.PublicKey, error) {
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
 	path := c.cfg.IdentityKeyFile
 	if path == "" {
 		path = "data/update-identity.key"
@@ -353,9 +476,32 @@ func (c *Client) identity() (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	}
 	return priv, pub, nil
 }
+
+func (c *Client) ensureInstanceID() (string, error) {
+	c.mu.RLock()
+	id := c.instanceID
+	c.mu.RUnlock()
+	if id != "" {
+		return id, nil
+	}
+	_, pub, err := c.identity()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(pub)
+	id = "panel-" + hex.EncodeToString(sum[:16])
+	c.mu.Lock()
+	if c.instanceID == "" {
+		c.instanceID = id
+	} else {
+		id = c.instanceID
+	}
+	c.mu.Unlock()
+	return id, nil
+}
 func (c *Client) postRaw(ctx context.Context, path string, payload, out any, headers map[string]string) error {
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.baseURL, "/")+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.centerURL()+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

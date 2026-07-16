@@ -3,9 +3,14 @@
     <template #header>
       <div class="page-header">
         <span class="page-title">我的代理</span>
-        <el-button type="primary" @click="$router.push('/proxies/create')">
-          <el-icon><Plus /></el-icon>创建代理
-        </el-button>
+		<div class="header-actions">
+		  <el-button :disabled="configServers.length === 0" @click="openConfigDialog">
+			<el-icon><Document /></el-icon>FRPC 配置
+		  </el-button>
+		  <el-button type="primary" @click="$router.push('/proxies/create')">
+			<el-icon><Plus /></el-icon>创建代理
+		  </el-button>
+		</div>
       </div>
     </template>
 
@@ -44,24 +49,65 @@
         </template>
       </el-table-column>
     </el-table>
+
+	<el-dialog v-model="showConfigDialog" title="FRPC 配置" width="680" append-to-body>
+	  <el-form label-width="70px">
+		<el-form-item label="节点">
+		  <el-select v-model="configServerId" style="width: 100%" @change="generateConfig">
+			<el-option v-for="server in configServers" :key="server.id" :label="server.name" :value="server.id" />
+		  </el-select>
+		</el-form-item>
+	  </el-form>
+	  <el-input
+		v-model="configContent"
+		type="textarea"
+		:rows="18"
+		readonly
+		resize="none"
+		v-loading="generatingConfig"
+	  />
+	  <template #footer>
+		<el-button :disabled="!configContent" @click="copyConfig">
+		  <el-icon><CopyDocument /></el-icon>复制
+		</el-button>
+		<el-button :disabled="!configContent" @click="downloadConfig">
+		  <el-icon><Download /></el-icon>下载
+		</el-button>
+		<el-button type="primary" :loading="generatingConfig" @click="generateConfig">
+		  <el-icon><RefreshRight /></el-icon>重新生成
+		</el-button>
+	  </template>
+	</el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getProxies, enableProxy, disableProxy, deleteProxy } from '../api'
+import { computed, ref, onMounted } from 'vue'
+import { getProxies, getFrpcConfig, enableProxy, disableProxy, deleteProxy } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete } from '@element-plus/icons-vue'
+import { CopyDocument, Document, Download, RefreshRight } from '@element-plus/icons-vue'
 
 const proxies = ref<any[]>([])
 const loading = ref(false)
+const showConfigDialog = ref(false)
+const configServerId = ref<number | null>(null)
+const configContent = ref('')
+const generatingConfig = ref(false)
+
+const configServers = computed(() => {
+  const servers = new Map<number, any>()
+  for (const proxy of proxies.value) {
+	if (proxy.enabled && proxy.server?.id) servers.set(proxy.server.id, proxy.server)
+  }
+  return Array.from(servers.values())
+})
 
 onMounted(() => fetchData())
 
 async function fetchData() {
   loading.value = true
   try {
-    const res = await getProxies({ size: 100 })
+    const res = await getProxies({ size: 1000 })
     proxies.value = res.data.list
   } finally {
     loading.value = false
@@ -87,6 +133,55 @@ async function handleDelete(row: any) {
   fetchData()
 }
 
+async function openConfigDialog() {
+  const firstServer = configServers.value[0]
+  if (!firstServer) return
+  configServerId.value = firstServer.id
+  configContent.value = ''
+  showConfigDialog.value = true
+  await generateConfig()
+}
+
+async function generateConfig() {
+  if (!configServerId.value) return
+  generatingConfig.value = true
+  try {
+	const res = await getFrpcConfig(configServerId.value)
+	configContent.value = res.data.config || ''
+  } finally {
+	generatingConfig.value = false
+  }
+}
+
+async function copyConfig() {
+  if (!configContent.value) return
+  try {
+	await navigator.clipboard.writeText(configContent.value)
+  } catch {
+	const textarea = document.createElement('textarea')
+	textarea.value = configContent.value
+	textarea.style.position = 'fixed'
+	textarea.style.opacity = '0'
+	document.body.appendChild(textarea)
+	textarea.select()
+	document.execCommand('copy')
+	document.body.removeChild(textarea)
+  }
+  ElMessage.success('配置已复制')
+}
+
+function downloadConfig() {
+  if (!configContent.value) return
+  const server = configServers.value.find((item: any) => item.id === configServerId.value)
+  const safeName = String(server?.name || configServerId.value || 'node').replace(/[^a-zA-Z0-9_-]+/g, '-')
+  const url = URL.createObjectURL(new Blob([configContent.value], { type: 'text/plain;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `frpc-${safeName}.toml`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 function displayAddr(row: any): string {
   if (row.remote_addr) return row.remote_addr
   if (row.type === 'tcp' || row.type === 'udp') {
@@ -110,5 +205,8 @@ function formatBytes(bytes: number): string {
 </script>
 
 <style scoped>
-/* page-header and page-title are defined in design-system.css */
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
 </style>

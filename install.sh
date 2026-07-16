@@ -198,7 +198,29 @@ if [ ! -f "$CONFIG" ]; then
   CREATED_PASSWORD="${FRP_PANEL_ADMIN_PASSWORD:-$(random_hex 12)}"
   ADMIN_EMAIL="${FRP_PANEL_ADMIN_EMAIL:-admin@example.com}"
   PORT="${FRP_PANEL_PORT:-8080}"
-  AUTH_SERVER="${FRP_PANEL_AUTH_SERVER:-https://ymsq.movewellpro.fun}"
+  HEARTBEAT_ENABLED="${FRP_PANEL_HEARTBEAT_ENABLED:-}"
+  PANEL_DOMAIN="${FRP_PANEL_DOMAIN:-}"
+  if [ -z "$HEARTBEAT_ENABLED" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf 'Enable signed five-second health reporting to 08642.xyz? [y/N]: ' > /dev/tty
+    IFS= read -r answer < /dev/tty || answer=""
+    case "$answer" in y|Y|yes|YES) HEARTBEAT_ENABLED="true" ;; *) HEARTBEAT_ENABLED="false" ;; esac
+  fi
+  case "$HEARTBEAT_ENABLED" in
+    1|true|TRUE|yes|YES) HEARTBEAT_ENABLED="true" ;;
+    *) HEARTBEAT_ENABLED="false" ;;
+  esac
+  if [ "$HEARTBEAT_ENABLED" = "true" ]; then
+    if [ -z "$PANEL_DOMAIN" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+      printf 'Public panel domain (for example panel.example.com): ' > /dev/tty
+      IFS= read -r PANEL_DOMAIN < /dev/tty || PANEL_DOMAIN=""
+    fi
+    PANEL_DOMAIN=$(printf '%s' "$PANEL_DOMAIN" | sed 's#^https\{0,1\}://##; s#/$##')
+    if ! printf '%s' "$PANEL_DOMAIN" | grep -Eq '^[A-Za-z0-9.-]+(:[0-9]+)?$'; then
+      echo "A valid FRP_PANEL_DOMAIN is required when health reporting is enabled." >&2
+      exit 1
+    fi
+    PANEL_DOMAIN="https://$PANEL_DOMAIN"
+  fi
   cat > "$CONFIG" <<EOF
 server:
   host: "0.0.0.0"
@@ -225,14 +247,14 @@ frp:
 admin:
   email: "$ADMIN_EMAIL"
   password: "$CREATED_PASSWORD"
-license:
-  auth_server: "$AUTH_SERVER"
 update:
-  center_url: ""
+  center_url: "https://08642.xyz"
   instance_key: ""
   panel_version: "$VERSION"
-  panel_domain: ""
-  control_public_key: ""
+  panel_domain: "$PANEL_DOMAIN"
+  heartbeat_enabled: $HEARTBEAT_ENABLED
+  heartbeat_interval: 5s
+  control_public_key: "HU5iQjEL7v24v5aK0K+gHTctvWorW+iLq5bhpXf9lSU="
   identity_key_file: "$DATA_DIR/update-identity.key"
   lease_cache_file: "$DATA_DIR/update-lease.json"
   bootstrap_cache_file: "$DATA_DIR/update-bootstrap.json"

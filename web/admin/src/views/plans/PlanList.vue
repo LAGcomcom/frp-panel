@@ -26,6 +26,7 @@
             <el-tag size="small" type="info">{{ formatBandwidth(row.max_bandwidth) }}</el-tag>
             <el-tag size="small" type="info">{{ formatTraffic(row.max_traffic) }}</el-tag>
             <el-tag size="small" type="info">{{ row.duration_days }}天</el-tag>
+			<el-tag v-if="row.group" size="small" type="success">{{ row.group.name }}</el-tag>
           </div>
         </template>
       </el-table-column>
@@ -78,15 +79,19 @@
             </el-col>
             <el-col :span="12">
               <el-form-item label="有效时长">
-                <el-input v-model="form.duration_days" placeholder="30">
-                  <template #append>天</template>
-                </el-input>
+				<el-input-number v-model="form.duration_days" :min="1" :step="1" controls-position="right" style="width: 100%" />
               </el-form-item>
             </el-col>
           </el-row>
           <el-form-item label="套餐描述">
             <el-input v-model="form.description" type="textarea" :rows="2" placeholder="可选，简要描述套餐特点" />
           </el-form-item>
+		  <el-form-item label="用户组">
+			<el-select v-model="form.group_id" style="width: 100%">
+			  <el-option label="不自动分组" :value="0" />
+			  <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+			</el-select>
+		  </el-form-item>
         </div>
 
         <!-- 资源限制 -->
@@ -110,7 +115,7 @@
           </el-row>
           <el-row :gutter="16">
             <el-col :span="12">
-              <el-form-item label="带宽限制">
+              <el-form-item label="单代理带宽上限">
                 <el-input v-model="form.max_bandwidth_mb" placeholder="10">
                   <template #append>MB/s</template>
                 </el-input>
@@ -159,7 +164,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, reactive } from 'vue'
-import { getPlans, createPlan, updatePlan, togglePlanStatus, deletePlan } from '../../api'
+import { getPlans, getUserGroups, createPlan, updatePlan, togglePlanStatus, deletePlan } from '../../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete } from '@element-plus/icons-vue'
 
@@ -167,14 +172,20 @@ const plans = ref<any[]>([])
 const loading = ref(false)
 const showDialog = ref(false)
 const editingPlan = ref<any>(null)
+const groups = ref<any[]>([])
 
 const form = reactive({
   name: '', description: '', max_proxies: 5, max_bandwidth_mb: 10,
   max_traffic_gb: 100, max_ports: 10, duration_days: 30,
   price_monthly: 0, price_quarterly: 0, price_yearly: 0,
+	group_id: 0,
 })
 
-onMounted(() => fetchData())
+onMounted(async () => {
+	const groupRes = await getUserGroups()
+	groups.value = groupRes.data || []
+	await fetchData()
+})
 
 async function fetchData() {
   loading.value = true
@@ -192,6 +203,7 @@ function openAdd() {
     name: '', description: '', max_proxies: 5, max_bandwidth_mb: 10,
     max_traffic_gb: 100, max_ports: 10, duration_days: 30,
     price_monthly: 0, price_quarterly: 0, price_yearly: 0,
+	group_id: 0,
   })
   showDialog.value = true
 }
@@ -204,6 +216,7 @@ function handleEdit(row: any) {
     max_traffic_gb: row.max_traffic / 1024 / 1024 / 1024,
     max_ports: row.max_ports, duration_days: row.duration_days,
     price_monthly: row.price_monthly, price_quarterly: row.price_quarterly, price_yearly: row.price_yearly,
+	group_id: row.group_id || 0,
   })
   showDialog.value = true
 }
@@ -219,6 +232,8 @@ async function handleSubmit() {
     price_monthly: Number(form.price_monthly),
     price_quarterly: Number(form.price_quarterly),
     price_yearly: Number(form.price_yearly),
+	group_id: form.group_id || undefined,
+	clear_group: form.group_id === 0,
   }
   if (editingPlan.value) {
     await updatePlan(editingPlan.value.id, data)

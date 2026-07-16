@@ -17,6 +17,18 @@
         <el-button size="small" v-if="server.status === 'running' && !server.agent_installed" @click="handleInstallAgent">
           安装监控
         </el-button>
+		<el-button size="small" @click="openEdit">编辑</el-button>
+		<el-dropdown trigger="click" @command="handleMoreCommand">
+		  <el-button size="small">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+		  <template #dropdown>
+			<el-dropdown-menu>
+			  <el-dropdown-item command="clients" :disabled="server.status !== 'running'">客户端</el-dropdown-item>
+			  <el-dropdown-item command="config" :disabled="server.status === 'pending' || server.status === 'installing'">FRPS 配置</el-dropdown-item>
+			  <el-dropdown-item command="logs" :disabled="server.status === 'pending' || server.status === 'installing'">运行日志</el-dropdown-item>
+			  <el-dropdown-item command="uninstall" divided :disabled="server.status === 'pending' || server.status === 'installing'">卸载 FRPS</el-dropdown-item>
+			</el-dropdown-menu>
+		  </template>
+		</el-dropdown>
         <el-button size="small" type="danger" @click="handleDelete">删除</el-button>
       </div>
     </div>
@@ -120,14 +132,64 @@
         <el-empty v-if="proxies.length === 0" description="暂无代理" :image-size="48" />
       </el-card>
     </div>
+
+	<el-dialog v-model="showEdit" title="编辑节点" width="520" append-to-body>
+	  <el-form :model="editForm" label-width="120px">
+		<el-form-item label="名称" required><el-input v-model="editForm.name" /></el-form-item>
+		<el-form-item label="地区"><el-input v-model="editForm.region" /></el-form-item>
+		<el-form-item label="最大用户数"><el-input-number v-model="editForm.max_users" :min="0" /></el-form-item>
+		<el-form-item label="绑定端口"><el-input-number v-model="editForm.bind_port" :min="1" :max="65535" /></el-form-item>
+		<el-form-item label="面板端口"><el-input-number v-model="editForm.dashboard_port" :min="1" :max="65535" /></el-form-item>
+		<el-form-item label="HTTP 端口"><el-input-number v-model="editForm.vhost_http_port" :min="1" :max="65535" /></el-form-item>
+		<el-form-item label="HTTPS 端口"><el-input-number v-model="editForm.vhost_https_port" :min="1" :max="65535" /></el-form-item>
+	  </el-form>
+	  <template #footer>
+		<el-button @click="showEdit = false">取消</el-button>
+		<el-button type="primary" :loading="savingEdit" @click="saveEdit">保存</el-button>
+	  </template>
+	</el-dialog>
+
+	<el-dialog v-model="showConfig" title="FRPS 配置" width="760" append-to-body>
+	  <el-alert type="warning" :closable="false" show-icon title="手动保存配置后，节点安全认证会暂停；请重新部署节点以恢复安全模式。" />
+	  <el-input v-model="configContent" type="textarea" :rows="20" class="config-editor" v-loading="configLoading" />
+	  <template #footer>
+		<el-button @click="showConfig = false">取消</el-button>
+		<el-button type="primary" :loading="configSaving" @click="saveConfig">保存并重启</el-button>
+	  </template>
+	</el-dialog>
+
+	<el-dialog v-model="showLogs" title="FRPS 运行日志" width="820" append-to-body>
+	  <div class="dialog-toolbar">
+		<el-input-number v-model="logLines" :min="50" :max="2000" :step="50" />
+		<el-button :loading="logsLoading" @click="loadLogs">刷新</el-button>
+	  </div>
+	  <pre class="log-view">{{ logsContent || '暂无日志' }}</pre>
+	</el-dialog>
+
+	<el-dialog v-model="showClients" title="已连接客户端" width="820" append-to-body>
+	  <el-table :data="clients" v-loading="clientsLoading" stripe>
+		<el-table-column prop="user" label="用户" min-width="130" />
+		<el-table-column prop="hostname" label="主机名" min-width="130" />
+		<el-table-column prop="clientIP" label="客户端 IP" min-width="140" />
+		<el-table-column prop="version" label="版本" width="100" />
+		<el-table-column prop="online" label="状态" width="90">
+		  <template #default="{ row }"><el-tag :type="row.online ? 'success' : 'info'" size="small">{{ row.online ? '在线' : '离线' }}</el-tag></template>
+		</el-table-column>
+	  </el-table>
+	  <el-empty v-if="!clientsLoading && clients.length === 0" description="暂无客户端" :image-size="48" />
+	</el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getServer, getServerProxies, getServerMetrics, installAgent, deployServer, restartServer, stopServer, deleteServer } from '../../api'
+import {
+  deleteServer, deployServer, getServer, getServerClients, getServerConfig, getServerLogs,
+  getServerMetrics, getServerProxies, installAgent, restartServer, stopServer, uninstallServer,
+  updateServer, updateServerConfig,
+} from '../../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -136,6 +198,20 @@ const proxies = ref<any[]>([])
 const metrics = ref<any>({})
 const loading = ref(false)
 let metricsTimer: ReturnType<typeof setInterval> | null = null
+const showEdit = ref(false)
+const savingEdit = ref(false)
+const editForm = reactive({ name: '', region: '', max_users: 0, bind_port: 7000, dashboard_port: 7500, vhost_http_port: 80, vhost_https_port: 443 })
+const showConfig = ref(false)
+const configContent = ref('')
+const configLoading = ref(false)
+const configSaving = ref(false)
+const showLogs = ref(false)
+const logsContent = ref('')
+const logsLoading = ref(false)
+const logLines = ref(200)
+const showClients = ref(false)
+const clients = ref<any[]>([])
+const clientsLoading = ref(false)
 
 const statusMap: Record<string, string> = {
   pending: '待部署', installing: '安装中', running: '运行中', stopped: '已停止', error: '异常',
@@ -240,6 +316,97 @@ async function handleDelete() {
   router.push('/servers')
 }
 
+function openEdit() {
+	Object.assign(editForm, {
+	  name: server.value.name || '', region: server.value.region || '', max_users: server.value.max_users || 0,
+	  bind_port: server.value.bind_port || 7000, dashboard_port: server.value.dashboard_port || 7500,
+	  vhost_http_port: server.value.vhost_http_port || 80, vhost_https_port: server.value.vhost_https_port || 443,
+	})
+	showEdit.value = true
+}
+
+async function saveEdit() {
+	if (!editForm.name.trim()) {
+	  ElMessage.warning('请填写节点名称')
+	  return
+	}
+	savingEdit.value = true
+	try {
+	  await updateServer(server.value.id, editForm)
+	  Object.assign(server.value, editForm)
+	  showEdit.value = false
+	  ElMessage.success('节点信息已更新')
+	} finally {
+	  savingEdit.value = false
+	}
+}
+
+async function handleMoreCommand(command: string) {
+	if (command === 'clients') await openClients()
+	if (command === 'config') await openConfig()
+	if (command === 'logs') await openLogs()
+	if (command === 'uninstall') await handleUninstall()
+}
+
+async function openClients() {
+	showClients.value = true
+	clientsLoading.value = true
+	try {
+	  const res = await getServerClients(server.value.id)
+	  clients.value = res.data?.clients || []
+	} finally {
+	  clientsLoading.value = false
+	}
+}
+
+async function openConfig() {
+	showConfig.value = true
+	configLoading.value = true
+	try {
+	  const res = await getServerConfig(server.value.id)
+	  configContent.value = res.data?.config || ''
+	} finally {
+	  configLoading.value = false
+	}
+}
+
+async function saveConfig() {
+	await ElMessageBox.confirm('保存后 FRPS 会重启，安全认证需重新部署节点才能恢复。确认继续？', '确认保存', { type: 'warning' })
+	configSaving.value = true
+	try {
+	  await updateServerConfig(server.value.id, configContent.value)
+	  server.value.plugin_auth_enabled = false
+	  showConfig.value = false
+	  ElMessage.success('配置已保存，建议立即重新部署节点')
+	} finally {
+	  configSaving.value = false
+	}
+}
+
+async function openLogs() {
+	showLogs.value = true
+	await loadLogs()
+}
+
+async function loadLogs() {
+	logsLoading.value = true
+	try {
+	  const res = await getServerLogs(server.value.id, logLines.value)
+	  logsContent.value = res.data?.logs || ''
+	} finally {
+	  logsLoading.value = false
+	}
+}
+
+async function handleUninstall() {
+	await ElMessageBox.confirm(`确认从 ${server.value.name} 卸载 FRPS？节点上的隧道会立即中断。`, '确认卸载', { type: 'warning' })
+	await uninstallServer(server.value.id)
+	server.value.status = 'pending'
+	server.value.plugin_auth_enabled = false
+	server.value.agent_installed = false
+	ElMessage.success('FRPS 已卸载')
+}
+
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B'
   const k = 1024
@@ -266,6 +433,9 @@ function formatBytes(bytes: number): string {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.header-actions > * {
+  margin-left: 0 !important;
 }
 .info-row {
   display: grid;
@@ -315,5 +485,40 @@ function formatBytes(bytes: number): string {
   color: var(--el-text-color-primary);
   margin-bottom: 8px;
   font-family: monospace;
+}
+.config-editor {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+}
+.dialog-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.log-view {
+  min-height: 360px;
+  max-height: 560px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  background: #111827;
+  color: #d1fae5;
+  border-radius: 6px;
+  font: 12px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media (max-width: 1100px) {
+  .detail-header {
+    flex-wrap: wrap;
+  }
+  .header-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
 }
 </style>

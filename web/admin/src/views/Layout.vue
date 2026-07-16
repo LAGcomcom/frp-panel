@@ -23,7 +23,7 @@
 
         <span v-if="!isCollapsed" class="nav-group-label">管理</span>
         <router-link
-          v-for="item in menuItems.slice(1, 10)"
+		  v-for="item in menuItems.slice(1, 11)"
           :key="item.path"
           :to="item.path"
           class="nav-item"
@@ -35,7 +35,7 @@
 
         <span v-if="!isCollapsed" class="nav-group-label">监控</span>
         <router-link
-          v-for="item in menuItems.slice(10)"
+		  v-for="item in menuItems.slice(11)"
           :key="item.path"
           :to="item.path"
           class="nav-item"
@@ -240,6 +240,7 @@ const menuItems = [
   { path: '/dashboard', title: '仪表盘', icon: 'DataBoard' },
   { path: '/servers', title: '服务器', icon: 'Monitor' },
   { path: '/users', title: '用户', icon: 'User' },
+	{ path: '/user-groups', title: '用户组', icon: 'UserFilled' },
   { path: '/plans', title: '套餐', icon: 'Goods' },
   { path: '/orders', title: '订单', icon: 'Document' },
   { path: '/proxies', title: '代理', icon: 'Connection' },
