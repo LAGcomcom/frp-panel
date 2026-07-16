@@ -8,9 +8,108 @@ CONFIG_DIR="${FRP_PANEL_CONFIG_DIR:-/etc/frp-panel}"
 SERVICE_NAME="frp-panel"
 MODE=""
 ASSUME_YES="0"
+PANEL_LANG="${FRP_PANEL_LANG:-zh}"
+
+normalize_language() {
+  case "$PANEL_LANG" in
+    en|en_US|en-US) PANEL_LANG="en" ;;
+    *) PANEL_LANG="zh" ;;
+  esac
+}
+
+text() {
+  key=$1
+  case "$PANEL_LANG:$key" in
+    zh:usage) echo "用法：install.sh [--install|--update|--uninstall] [--yes]" ;;
+    zh:installed) echo "已安装" ;;
+    zh:not_installed) echo "未安装" ;;
+    zh:menu_title) echo "FRP 面板指令中心" ;;
+    zh:menu_install) echo "安装" ;;
+    zh:menu_update) echo "更新" ;;
+    zh:menu_uninstall) echo "卸载（保留配置和数据）" ;;
+    zh:menu_language) echo "切换语言 / Language" ;;
+    zh:menu_exit) echo "退出" ;;
+    zh:select_operation) echo "请选择操作 [0-4]：" ;;
+    zh:cancelled) echo "操作已取消。" ;;
+    zh:invalid_selection) echo "选择无效，请输入 0 到 4。" ;;
+    zh:root_required) echo "请使用 root 运行，例如：curl ... | sudo sh" ;;
+    zh:linux_only) echo "该安装程序仅支持 Linux。" ;;
+    zh:uninstall_confirm_required) echo "卸载需要交互确认，或使用 --yes。" ;;
+    zh:uninstall_prompt) echo "确定移除 FRP 面板服务和程序吗？配置与数据会保留。[y/N]：" ;;
+    zh:uninstalled) echo "FRP 面板已卸载。" ;;
+    zh:config_kept) echo "配置保留位置：" ;;
+    zh:data_kept) echo "数据保留位置：" ;;
+    zh:update_not_installed) echo "尚未安装 FRP 面板，请先选择安装。" ;;
+    zh:init_missing) echo "未检测到 systemd 或 OpenRC，无法管理服务。" ;;
+    zh:unsupported_arch) echo "不支持的处理器架构：" ;;
+    zh:download_tool_missing) echo "需要安装 curl 或 wget 才能下载文件。" ;;
+    zh:checksum_missing) echo "发布包缺少以下文件的校验值：" ;;
+    zh:hash_tool_missing) echo "需要安装 sha256sum 或 shasum 才能校验文件。" ;;
+    zh:hash_failed) echo "SHA-256 校验失败，已停止安装。" ;;
+    zh:version_empty) echo "发布版本号为空，已停止安装。" ;;
+    zh:version_unsafe) echo "发布版本号包含不安全字符。" ;;
+    zh:heartbeat_prompt) echo "是否启用向 08642.xyz 发送每 5 秒一次的签名存活信号？[y/N]：" ;;
+    zh:domain_prompt) echo "请输入面板公网域名，例如 panel.example.com：" ;;
+    zh:domain_required) echo "启用存活信号时必须提供有效的 FRP_PANEL_DOMAIN。" ;;
+    zh:service_restore) echo "服务启动失败，已恢复之前的程序。" ;;
+    zh:completed) echo "操作完成。" ;;
+    zh:config_label) echo "配置文件：" ;;
+    zh:data_label) echo "数据目录：" ;;
+    zh:admin_label) echo "管理员账号：" ;;
+    zh:password_label) echo "管理员密码：" ;;
+    zh:store_password) echo "请立即保存该密码；它只会在首次安装时显示。" ;;
+    zh:mode_install) echo "安装" ;;
+    zh:mode_update) echo "更新" ;;
+    zh:mode_uninstall) echo "卸载" ;;
+    en:usage) echo "Usage: install.sh [--install|--update|--uninstall] [--yes]" ;;
+    en:installed) echo "installed" ;;
+    en:not_installed) echo "not installed" ;;
+    en:menu_title) echo "FRP Panel Command Center" ;;
+    en:menu_install) echo "Install" ;;
+    en:menu_update) echo "Update" ;;
+    en:menu_uninstall) echo "Uninstall (keep config and data)" ;;
+    en:menu_language) echo "Language / 切换语言" ;;
+    en:menu_exit) echo "Exit" ;;
+    en:select_operation) echo "Select an operation [0-4]:" ;;
+    en:cancelled) echo "Cancelled." ;;
+    en:invalid_selection) echo "Invalid selection. Enter a number from 0 to 4." ;;
+    en:root_required) echo "Please run as root (for example: curl ... | sudo sh)." ;;
+    en:linux_only) echo "Only Linux is supported by this installer." ;;
+    en:uninstall_confirm_required) echo "Uninstall requires an interactive confirmation or --yes." ;;
+    en:uninstall_prompt) echo "Remove FRP Panel services and binaries? Config and data will be kept. [y/N]:" ;;
+    en:uninstalled) echo "FRP Panel was uninstalled." ;;
+    en:config_kept) echo "Config kept at:" ;;
+    en:data_kept) echo "Data kept at:" ;;
+    en:update_not_installed) echo "FRP Panel is not installed. Select Install first." ;;
+    en:init_missing) echo "Neither systemd nor OpenRC was detected." ;;
+    en:unsupported_arch) echo "Unsupported architecture:" ;;
+    en:download_tool_missing) echo "curl or wget is required." ;;
+    en:checksum_missing) echo "Checksum is missing for:" ;;
+    en:hash_tool_missing) echo "sha256sum or shasum is required." ;;
+    en:hash_failed) echo "SHA-256 verification failed; installation stopped." ;;
+    en:version_empty) echo "Release version is empty; installation stopped." ;;
+    en:version_unsafe) echo "Release version contains unsafe characters." ;;
+    en:heartbeat_prompt) echo "Enable a signed health signal to 08642.xyz every five seconds? [y/N]:" ;;
+    en:domain_prompt) echo "Public panel domain (for example panel.example.com):" ;;
+    en:domain_required) echo "A valid FRP_PANEL_DOMAIN is required when health reporting is enabled." ;;
+    en:service_restore) echo "Service failed to start; the previous binary was restored." ;;
+    en:completed) echo " completed." ;;
+    en:config_label) echo "Config:" ;;
+    en:data_label) echo "Data:" ;;
+    en:admin_label) echo "Admin:" ;;
+    en:password_label) echo "Password:" ;;
+    en:store_password) echo "Store this password now; it is only printed during first installation." ;;
+    en:mode_install) echo "install" ;;
+    en:mode_update) echo "update" ;;
+    en:mode_uninstall) echo "uninstall" ;;
+    *) echo "$key" ;;
+  esac
+}
+
+normalize_language
 
 usage() {
-  echo "Usage: install.sh [--install|--update|--uninstall] [--yes]"
+  text usage
 }
 
 while [ "$#" -gt 0 ]; do
@@ -31,35 +130,40 @@ show_menu() {
     return
   fi
 
-  if [ -x "$INSTALL_DIR/frp-panel" ]; then
-    status="installed"
-  else
-    status="not installed"
-  fi
+  while :; do
+    if [ -x "$INSTALL_DIR/frp-panel" ]; then
+      status=$(text installed)
+    else
+      status=$(text not_installed)
+    fi
 
-  printf '\nFRP Panel Manager (%s)\n' "$status" > /dev/tty
-  printf '  1) Install\n  2) Update\n  3) Uninstall (keep config and data)\n  0) Exit\n' > /dev/tty
-  printf 'Select an operation [0-3]: ' > /dev/tty
-  IFS= read -r choice < /dev/tty || choice="0"
-  case "$choice" in
-    1) MODE="install" ;;
-    2) MODE="update" ;;
-    3) MODE="uninstall" ;;
-    0) echo "Cancelled."; exit 0 ;;
-    *) echo "Invalid selection." >&2; exit 2 ;;
-  esac
+    printf '\n%s (%s)\n' "$(text menu_title)" "$status" > /dev/tty
+    printf '  1) %s\n  2) %s\n  3) %s\n  4) %s\n  0) %s\n' \
+      "$(text menu_install)" "$(text menu_update)" "$(text menu_uninstall)" \
+      "$(text menu_language)" "$(text menu_exit)" > /dev/tty
+    printf '%s ' "$(text select_operation)" > /dev/tty
+    IFS= read -r choice < /dev/tty || choice="0"
+    case "$choice" in
+      1) MODE="install"; return ;;
+      2) MODE="update"; return ;;
+      3) MODE="uninstall"; return ;;
+      4) [ "$PANEL_LANG" = "zh" ] && PANEL_LANG="en" || PANEL_LANG="zh" ;;
+      0) text cancelled; exit 0 ;;
+      *) text invalid_selection >&2 ;;
+    esac
+  done
 }
 
 [ -n "$MODE" ] || show_menu
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Please run as root (for example: curl ... | sudo sh)." >&2
+  text root_required >&2
   exit 1
 fi
 
 case "$(uname -s)" in
   Linux) ;;
-  *) echo "Only Linux is supported by this installer." >&2; exit 1 ;;
+  *) text linux_only >&2; exit 1 ;;
 esac
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -73,14 +177,14 @@ fi
 confirm_uninstall() {
   [ "$ASSUME_YES" = "1" ] && return
   if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-    echo "Uninstall requires an interactive confirmation or --yes." >&2
+    text uninstall_confirm_required >&2
     exit 1
   fi
-  printf 'Remove FRP Panel services and binaries? Config and data will be kept. [y/N]: ' > /dev/tty
+  printf '%s ' "$(text uninstall_prompt)" > /dev/tty
   IFS= read -r answer < /dev/tty || answer=""
   case "$answer" in
-    y|Y|yes|YES) ;;
-    *) echo "Cancelled."; exit 0 ;;
+    y|Y|yes|YES|是) ;;
+    *) text cancelled; exit 0 ;;
   esac
 }
 
@@ -102,9 +206,9 @@ uninstall_panel() {
   rm -f "$INSTALL_DIR/frp-panel" "$INSTALL_DIR"/frp-panel.backup.*
   rmdir "$INSTALL_DIR" >/dev/null 2>&1 || true
 
-  echo "FRP Panel was uninstalled."
-  echo "Config kept at: $CONFIG_DIR"
-  echo "Data kept at:   $DATA_DIR"
+  text uninstalled
+  printf '%s %s\n' "$(text config_kept)" "$CONFIG_DIR"
+  printf '%s %s\n' "$(text data_kept)" "$DATA_DIR"
 }
 
 if [ "$MODE" = "uninstall" ]; then
@@ -113,19 +217,19 @@ if [ "$MODE" = "uninstall" ]; then
 fi
 
 if [ "$MODE" = "update" ] && [ ! -x "$INSTALL_DIR/frp-panel" ]; then
-  echo "FRP Panel is not installed. Select Install first." >&2
+  text update_not_installed >&2
   exit 1
 fi
 
 if [ "$INIT" = "none" ]; then
-  echo "Neither systemd nor OpenRC was detected." >&2
+  text init_missing >&2
   exit 1
 fi
 
 case "$(uname -m)" in
   x86_64|amd64) ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
-  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  *) printf '%s %s\n' "$(text unsupported_arch)" "$(uname -m)" >&2; exit 1 ;;
 esac
 
 TMP_DIR=$(mktemp -d)
@@ -142,7 +246,7 @@ download() {
   elif command -v wget >/dev/null 2>&1; then
     wget -O "$output" --timeout=30 --tries=3 "$url"
   else
-    echo "curl or wget is required." >&2
+    text download_tool_missing >&2
     exit 1
   fi
 }
@@ -159,21 +263,21 @@ download "$RELEASE_BASE/checksums.txt" "$TMP_DIR/checksums.txt"
 download "$RELEASE_BASE/version.txt" "$TMP_DIR/version.txt"
 
 expected=$(awk -v file="$ASSET" '$2 == file || $2 == "*" file { print $1; exit }' "$TMP_DIR/checksums.txt")
-[ -n "$expected" ] || { echo "Checksum for $ASSET is missing." >&2; exit 1; }
+[ -n "$expected" ] || { printf '%s %s\n' "$(text checksum_missing)" "$ASSET" >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "$TMP_DIR/$ASSET" | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then
   actual=$(shasum -a 256 "$TMP_DIR/$ASSET" | awk '{print $1}')
 else
-  echo "sha256sum or shasum is required." >&2
+  text hash_tool_missing >&2
   exit 1
 fi
-[ "$actual" = "$expected" ] || { echo "SHA-256 verification failed." >&2; exit 1; }
+[ "$actual" = "$expected" ] || { text hash_failed >&2; exit 1; }
 
 VERSION=$(tr -d '\r\n' < "$TMP_DIR/version.txt")
-[ -n "$VERSION" ] || { echo "Release version is empty." >&2; exit 1; }
+[ -n "$VERSION" ] || { text version_empty >&2; exit 1; }
 case "$VERSION" in
-  *[!A-Za-z0-9._-]*) echo "Release version contains unsafe characters." >&2; exit 1 ;;
+  *[!A-Za-z0-9._-]*) text version_unsafe >&2; exit 1 ;;
 esac
 
 if ! id frp-panel >/dev/null 2>&1; then
@@ -201,9 +305,9 @@ if [ ! -f "$CONFIG" ]; then
   HEARTBEAT_ENABLED="${FRP_PANEL_HEARTBEAT_ENABLED:-}"
   PANEL_DOMAIN="${FRP_PANEL_DOMAIN:-}"
   if [ -z "$HEARTBEAT_ENABLED" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    printf 'Enable signed five-second health reporting to 08642.xyz? [y/N]: ' > /dev/tty
+    printf '%s ' "$(text heartbeat_prompt)" > /dev/tty
     IFS= read -r answer < /dev/tty || answer=""
-    case "$answer" in y|Y|yes|YES) HEARTBEAT_ENABLED="true" ;; *) HEARTBEAT_ENABLED="false" ;; esac
+    case "$answer" in y|Y|yes|YES|是) HEARTBEAT_ENABLED="true" ;; *) HEARTBEAT_ENABLED="false" ;; esac
   fi
   case "$HEARTBEAT_ENABLED" in
     1|true|TRUE|yes|YES) HEARTBEAT_ENABLED="true" ;;
@@ -211,12 +315,12 @@ if [ ! -f "$CONFIG" ]; then
   esac
   if [ "$HEARTBEAT_ENABLED" = "true" ]; then
     if [ -z "$PANEL_DOMAIN" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-      printf 'Public panel domain (for example panel.example.com): ' > /dev/tty
+      printf '%s ' "$(text domain_prompt)" > /dev/tty
       IFS= read -r PANEL_DOMAIN < /dev/tty || PANEL_DOMAIN=""
     fi
     PANEL_DOMAIN=$(printf '%s' "$PANEL_DOMAIN" | sed 's#^https\{0,1\}://##; s#/$##')
     if ! printf '%s' "$PANEL_DOMAIN" | grep -Eq '^[A-Za-z0-9.-]+(:[0-9]+)?$'; then
-      echo "A valid FRP_PANEL_DOMAIN is required when health reporting is enabled." >&2
+      text domain_required >&2
       exit 1
     fi
     PANEL_DOMAIN="https://$PANEL_DOMAIN"
@@ -301,7 +405,7 @@ EOF
   if ! systemctl restart frp-panel; then
     [ -z "$CONFIG_BACKUP" ] || cp -p "$CONFIG_BACKUP" "$CONFIG"
     [ -z "$BACKUP" ] || { cp -p "$BACKUP" "$INSTALL_DIR/frp-panel"; systemctl restart frp-panel || true; }
-    echo "Service failed to start; the previous binary was restored." >&2
+    text service_restore >&2
     exit 1
   fi
 else
@@ -323,16 +427,17 @@ EOF
   if ! rc-service frp-panel restart; then
     [ -z "$CONFIG_BACKUP" ] || cp -p "$CONFIG_BACKUP" "$CONFIG"
     [ -z "$BACKUP" ] || { cp -p "$BACKUP" "$INSTALL_DIR/frp-panel"; rc-service frp-panel restart || true; }
-    echo "Service failed to start; the previous binary was restored." >&2
+    text service_restore >&2
     exit 1
   fi
 fi
 
-echo "FRP Panel $VERSION $MODE completed."
-echo "Config: $CONFIG"
-echo "Data:   $DATA_DIR"
+operation=$(text "mode_$MODE")
+printf 'FRP Panel %s %s%s\n' "$VERSION" "$operation" "$(text completed)"
+printf '%s %s\n' "$(text config_label)" "$CONFIG"
+printf '%s %s\n' "$(text data_label)" "$DATA_DIR"
 if [ -n "$CREATED_PASSWORD" ]; then
-  echo "Admin:  $ADMIN_EMAIL"
-  echo "Password: $CREATED_PASSWORD"
-  echo "Store this password now; it is only printed during first installation."
+  printf '%s %s\n' "$(text admin_label)" "$ADMIN_EMAIL"
+  printf '%s %s\n' "$(text password_label)" "$CREATED_PASSWORD"
+  text store_password
 fi

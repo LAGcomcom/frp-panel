@@ -15,12 +15,15 @@ curl -fsSL https://github.com/LAGcomcom/frp-panel/releases/latest/download/insta
 脚本会显示统一菜单：
 
 ```text
-FRP Panel Manager
-  1) Install
-  2) Update
-  3) Uninstall (keep config and data)
-  0) Exit
+FRP 面板指令中心（未安装）
+  1) 安装
+  2) 更新
+  3) 卸载（保留配置和数据）
+  4) 切换语言 / Language
+  0) 退出
 ```
+
+指令面板默认使用中文，按 `4` 可即时切换 English。无人值守任务可设置 `FRP_PANEL_LANG=en`，不设置时仍默认中文。
 
 支持 Linux `amd64`、`arm64`，自动识别 systemd 或 Alpine OpenRC。首次安装完成后终端会显示管理员账号和随机密码。默认监听 `8080`，配置位于 `/etc/frp-panel/config.yaml`，数据位于 `/var/lib/frp-panel`。
 
