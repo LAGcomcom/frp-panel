@@ -14,7 +14,7 @@ func NewUpdateHandler(client *updateservice.Client) *UpdateHandler {
 }
 
 func (h *UpdateHandler) Download(c *gin.Context) {
-	path, name, err := h.client.Download(c.Request.Context(), c.Param("version"))
+	path, name, err := h.client.Download(c.Request.Context(), c.Param("version"), c.Request.Host)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return

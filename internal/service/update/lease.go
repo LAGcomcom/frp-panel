@@ -194,7 +194,7 @@ func (c *Client) LeaseStatus() *Lease {
 	return &v
 }
 
-func (c *Client) Download(ctx context.Context, version string) (string, string, error) {
+func (c *Client) Download(ctx context.Context, version, requestHost string) (string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.centerURL()+"/api/v1/releases/"+url.PathEscape(version)+"/manifest", nil)
 	if err != nil {
 		return "", "", err
@@ -234,6 +234,13 @@ func (c *Client) Download(ctx context.Context, version string) (string, string, 
 		return "", "", err
 	}
 	nonce := randomNonce()
+	domain := c.cfg.PanelDomain
+	if domain == "" {
+		domain = requestHost
+	}
+	if err = c.registerPublicDomain(ctx, priv, domain); err != nil && !strings.Contains(err.Error(), "409") {
+		return "", "", fmt.Errorf("register update download: %w", err)
+	}
 	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(strings.Join([]string{id, version, asset.Name, nonce}, "\n"))))
 	downloadURL := c.centerURL() + "/api/v1/public/releases/" + url.PathEscape(version) + "/download/" + url.PathEscape(asset.Name)
 	downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
@@ -336,21 +343,28 @@ func (c *Client) renew(ctx context.Context) error {
 	return c.saveLease(env)
 }
 func (c *Client) registerPublic(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
-	return c.register(ctx, priv, pub, "/api/v1/public/instances/register", nil)
+	return c.register(ctx, priv, pub, c.cfg.PanelDomain, "/api/v1/public/instances/register", nil)
+}
+
+func (c *Client) registerPublicDomain(ctx context.Context, priv ed25519.PrivateKey, domain string) error {
+	return c.register(ctx, priv, priv.Public().(ed25519.PublicKey), domain, "/api/v1/public/instances/register", nil)
 }
 
 func (c *Client) registerPrivate(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
-	return c.register(ctx, priv, pub, "/api/v1/instances/register", map[string]string{"X-Enrollment-Token": c.cfg.InstanceKey})
+	return c.register(ctx, priv, pub, c.cfg.PanelDomain, "/api/v1/instances/register", map[string]string{"X-Enrollment-Token": c.cfg.InstanceKey})
 }
 
-func (c *Client) register(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey, path string, headers map[string]string) error {
+func (c *Client) register(ctx context.Context, priv ed25519.PrivateKey, pub ed25519.PublicKey, panelDomain, path string, headers map[string]string) error {
 	id, err := c.ensureInstanceID()
 	if err != nil {
 		return err
 	}
 	nonce := randomNonce()
 	pubText := base64.StdEncoding.EncodeToString(pub)
-	domain := normalizedHost(c.cfg.PanelDomain)
+	domain := normalizedHost(panelDomain)
+	if domain == "" {
+		return errors.New("panel domain is required")
+	}
 	message := strings.Join([]string{id, domain, c.cfg.PanelVersion, pubText, nonce}, "\n")
 	payload := map[string]string{"id": id, "domain": domain, "version": c.cfg.PanelVersion, "os": runtime.GOOS, "arch": runtime.GOARCH, "publickey": pubText, "nonce": nonce, "signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(message)))}
 	return c.postRaw(ctx, path, payload, nil, headers)

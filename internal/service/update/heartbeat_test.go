@@ -106,3 +106,33 @@ func TestStartDoesNothingWhenHeartbeatDisabled(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+func TestPublicDownloadRegistrationUsesRequestHostWhenHeartbeatIsDisabled(t *testing.T) {
+	registered := make(chan map[string]string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		registered <- payload
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.UpdateConfig{
+		CenterURL:       server.URL,
+		PanelVersion:    "1.0.0",
+		IdentityKeyFile: filepath.Join(t.TempDir(), "identity.key"),
+	}, "download-instance")
+	privateKey, _, err := client.identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.registerPublicDomain(context.Background(), privateKey, "panel.example.com:8080"); err != nil {
+		t.Fatal(err)
+	}
+	payload := <-registered
+	if payload["domain"] != "panel.example.com" {
+		t.Fatalf("registered domain=%q", payload["domain"])
+	}
+}
