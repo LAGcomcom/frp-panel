@@ -25,7 +25,7 @@ FRP 面板指令中心（未安装）
 
 指令面板默认使用中文，按 `4` 可即时切换 English。无人值守任务可设置 `FRP_PANEL_LANG=en`，不设置时仍默认中文。
 
-支持 Linux `amd64`、`arm64`，自动识别 systemd 或 Alpine OpenRC。首次安装完成后终端会显示管理员账号和随机密码。默认监听 `8080`，配置位于 `/etc/frp-panel/config.yaml`，数据位于 `/var/lib/frp-panel`。
+支持 Linux `amd64`、`arm64`，自动识别 systemd 或 Alpine OpenRC。首次安装时可以选择监听端口并填写可选访问域名；域名留空时自动使用服务器 IP。安装完成后终端会显示完整访问地址、管理员账号和随机密码。填写域名不会自动修改 DNS、配置反向代理或申请 SSL 证书。配置位于 `/etc/frp-panel/config.yaml`，数据位于 `/var/lib/frp-panel`。
 
 可通过环境变量覆盖首次安装参数：
 
@@ -34,11 +34,11 @@ curl -fsSL https://github.com/LAGcomcom/frp-panel/releases/latest/download/insta
   sudo FRP_PANEL_PORT=8080 FRP_PANEL_ADMIN_EMAIL=admin@example.com sh
 ```
 
-交互安装会询问是否启用签名存活上报。无人值守安装可明确开启，并提供面板域名：
+签名存活上报默认启用，不再进行交互询问；可通过 `FRP_PANEL_HEARTBEAT_ENABLED=false` 关闭。无人值守安装可以指定端口和域名：
 
 ```sh
 curl -fsSL https://github.com/LAGcomcom/frp-panel/releases/latest/download/install.sh | \
-  sudo FRP_PANEL_HEARTBEAT_ENABLED=true FRP_PANEL_DOMAIN=panel.example.com sh -s -- --install
+  sudo FRP_PANEL_PORT=8080 FRP_PANEL_DOMAIN=panel.example.com sh -s -- --install
 ```
 
 卸载只删除服务和程序文件，配置与数据库默认保留，重新安装后可以继续使用。

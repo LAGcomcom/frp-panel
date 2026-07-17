@@ -48,15 +48,17 @@ text() {
     zh:hash_failed) echo "SHA-256 校验失败，已停止安装。" ;;
     zh:version_empty) echo "发布版本号为空，已停止安装。" ;;
     zh:version_unsafe) echo "发布版本号包含不安全字符。" ;;
-    zh:heartbeat_prompt) echo "是否启用向 08642.xyz 发送每 5 秒一次的签名存活信号？[y/N]：" ;;
-    zh:domain_prompt) echo "请输入面板公网域名，例如 panel.example.com：" ;;
-    zh:domain_required) echo "启用存活信号时必须提供有效的 FRP_PANEL_DOMAIN。" ;;
+    zh:port_prompt) echo "请输入面板监听端口 [8080]：" ;;
+    zh:domain_prompt) echo "请输入访问域名（可留空，自动使用服务器 IP）：" ;;
+    zh:invalid_port) echo "端口必须是 1 到 65535 之间的数字。" ;;
+    zh:invalid_domain) echo "域名格式无效，请输入 example.com 或带协议的完整域名。" ;;
     zh:service_restore) echo "服务启动失败，已恢复之前的程序。" ;;
     zh:completed) echo "操作完成。" ;;
     zh:config_label) echo "配置文件：" ;;
     zh:data_label) echo "数据目录：" ;;
     zh:admin_label) echo "管理员账号：" ;;
     zh:password_label) echo "管理员密码：" ;;
+    zh:access_label) echo "面板访问地址：" ;;
     zh:store_password) echo "请立即保存该密码；它只会在首次安装时显示。" ;;
     zh:mode_install) echo "安装" ;;
     zh:mode_update) echo "更新" ;;
@@ -89,15 +91,17 @@ text() {
     en:hash_failed) echo "SHA-256 verification failed; installation stopped." ;;
     en:version_empty) echo "Release version is empty; installation stopped." ;;
     en:version_unsafe) echo "Release version contains unsafe characters." ;;
-    en:heartbeat_prompt) echo "Enable a signed health signal to 08642.xyz every five seconds? [y/N]:" ;;
-    en:domain_prompt) echo "Public panel domain (for example panel.example.com):" ;;
-    en:domain_required) echo "A valid FRP_PANEL_DOMAIN is required when health reporting is enabled." ;;
+    en:port_prompt) echo "Panel listen port [8080]:" ;;
+    en:domain_prompt) echo "Access domain (leave empty to use the server IP):" ;;
+    en:invalid_port) echo "Port must be a number between 1 and 65535." ;;
+    en:invalid_domain) echo "Invalid domain. Enter example.com or a full domain with a scheme." ;;
     en:service_restore) echo "Service failed to start; the previous binary was restored." ;;
     en:completed) echo " completed." ;;
     en:config_label) echo "Config:" ;;
     en:data_label) echo "Data:" ;;
     en:admin_label) echo "Admin:" ;;
     en:password_label) echo "Password:" ;;
+    en:access_label) echo "Panel URL:" ;;
     en:store_password) echo "Store this password now; it is only printed during first installation." ;;
     en:mode_install) echo "install" ;;
     en:mode_update) echo "update" ;;
@@ -251,6 +255,53 @@ download() {
   fi
 }
 
+detect_server_ip() {
+  detected=""
+  if command -v curl >/dev/null 2>&1; then
+    detected=$(curl -fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null || true)
+  elif command -v wget >/dev/null 2>&1; then
+    detected=$(wget -qO- -T 5 https://api.ipify.org 2>/dev/null || true)
+  fi
+  if ! printf '%s' "$detected" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+    detected=$( (hostname -I 2>/dev/null || true) | tr ' ' '\n' | awk '/^[0-9]+\./ { print; exit }')
+  fi
+  [ -n "$detected" ] || detected="127.0.0.1"
+  printf '%s' "$detected"
+}
+
+prepare_access_address() {
+  raw_domain=$(printf '%s' "${PANEL_DOMAIN:-}" | sed 's#/$##')
+  scheme="${FRP_PANEL_SCHEME:-}"
+  explicit_scheme="0"
+  case "$raw_domain" in
+    https://*) scheme="https"; explicit_scheme="1"; raw_domain=${raw_domain#https://} ;;
+    http://*) scheme="http"; explicit_scheme="1"; raw_domain=${raw_domain#http://} ;;
+  esac
+  if [ -n "$raw_domain" ] && ! printf '%s' "$raw_domain" | grep -Eq '^[A-Za-z0-9.-]+(:[0-9]+)?$'; then
+    text invalid_domain >&2
+    exit 1
+  fi
+  if [ -z "$raw_domain" ]; then
+    raw_domain=$(detect_server_ip)
+  fi
+  if [ -z "$scheme" ]; then
+    if [ "$PORT" = "443" ]; then scheme="https"; else scheme="http"; fi
+  fi
+  case "$scheme" in http|https) ;; *) text invalid_domain >&2; exit 1 ;; esac
+
+  PANEL_DOMAIN="$scheme://$raw_domain"
+  case "$raw_domain" in
+    *:*) ACCESS_URL="$PANEL_DOMAIN" ;;
+    *)
+      if [ "$explicit_scheme" = "1" ] || { [ "$scheme" = "http" ] && [ "$PORT" = "80" ]; } || { [ "$scheme" = "https" ] && [ "$PORT" = "443" ]; }; then
+        ACCESS_URL="$PANEL_DOMAIN"
+      else
+        ACCESS_URL="$PANEL_DOMAIN:$PORT"
+      fi
+      ;;
+  esac
+}
+
 if [ -n "${FRP_PANEL_VERSION:-}" ]; then
   RELEASE_BASE="https://github.com/$REPO/releases/download/$FRP_PANEL_VERSION"
 else
@@ -295,36 +346,35 @@ chown root:frp-panel "$CONFIG_DIR"
 
 CONFIG="$CONFIG_DIR/config.yaml"
 CREATED_PASSWORD=""
+ACCESS_URL=""
 if [ ! -f "$CONFIG" ]; then
   random_hex() { od -An -N "$1" -tx1 /dev/urandom | tr -d ' \n'; }
   JWT_SECRET=$(random_hex 32)
   SERVER_TOKEN=$(random_hex 24)
   CREATED_PASSWORD="${FRP_PANEL_ADMIN_PASSWORD:-$(random_hex 12)}"
   ADMIN_EMAIL="${FRP_PANEL_ADMIN_EMAIL:-admin@example.com}"
-  PORT="${FRP_PANEL_PORT:-8080}"
-  HEARTBEAT_ENABLED="${FRP_PANEL_HEARTBEAT_ENABLED:-}"
+  PORT="${FRP_PANEL_PORT:-}"
+  if [ -z "$PORT" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s ' "$(text port_prompt)" > /dev/tty
+    IFS= read -r PORT < /dev/tty || PORT=""
+  fi
+  [ -n "$PORT" ] || PORT="8080"
+  case "$PORT" in *[!0-9]*|'') text invalid_port >&2; exit 1 ;; esac
+  if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    text invalid_port >&2
+    exit 1
+  fi
+  HEARTBEAT_ENABLED="${FRP_PANEL_HEARTBEAT_ENABLED:-true}"
   PANEL_DOMAIN="${FRP_PANEL_DOMAIN:-}"
-  if [ -z "$HEARTBEAT_ENABLED" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    printf '%s ' "$(text heartbeat_prompt)" > /dev/tty
-    IFS= read -r answer < /dev/tty || answer=""
-    case "$answer" in y|Y|yes|YES|是) HEARTBEAT_ENABLED="true" ;; *) HEARTBEAT_ENABLED="false" ;; esac
+  if [ -z "$PANEL_DOMAIN" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s ' "$(text domain_prompt)" > /dev/tty
+    IFS= read -r PANEL_DOMAIN < /dev/tty || PANEL_DOMAIN=""
   fi
   case "$HEARTBEAT_ENABLED" in
     1|true|TRUE|yes|YES) HEARTBEAT_ENABLED="true" ;;
     *) HEARTBEAT_ENABLED="false" ;;
   esac
-  if [ "$HEARTBEAT_ENABLED" = "true" ]; then
-    if [ -z "$PANEL_DOMAIN" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-      printf '%s ' "$(text domain_prompt)" > /dev/tty
-      IFS= read -r PANEL_DOMAIN < /dev/tty || PANEL_DOMAIN=""
-    fi
-    PANEL_DOMAIN=$(printf '%s' "$PANEL_DOMAIN" | sed 's#^https\{0,1\}://##; s#/$##')
-    if ! printf '%s' "$PANEL_DOMAIN" | grep -Eq '^[A-Za-z0-9.-]+(:[0-9]+)?$'; then
-      text domain_required >&2
-      exit 1
-    fi
-    PANEL_DOMAIN="https://$PANEL_DOMAIN"
-  fi
+  prepare_access_address
   cat > "$CONFIG" <<EOF
 server:
   host: "0.0.0.0"
@@ -371,6 +421,13 @@ else
   CONFIG_BACKUP="$TMP_DIR/config.yaml.backup"
   cp -p "$CONFIG" "$CONFIG_BACKUP"
   sed "s/^\([[:space:]]*panel_version:[[:space:]]*\).*/\1\"$VERSION\"/" "$CONFIG_BACKUP" > "$CONFIG"
+fi
+
+if [ -z "$ACCESS_URL" ]; then
+  PORT=$(awk '$1 == "port:" { gsub(/\"/, "", $2); print $2; exit }' "$CONFIG")
+  [ -n "$PORT" ] || PORT="8080"
+  PANEL_DOMAIN=$(awk '$1 == "panel_domain:" { sub(/^[^:]*:[[:space:]]*/, ""); gsub(/\"/, ""); print; exit }' "$CONFIG")
+  prepare_access_address
 fi
 
 if [ -f "$INSTALL_DIR/frp-panel" ]; then
@@ -436,6 +493,7 @@ operation=$(text "mode_$MODE")
 printf 'FRP Panel %s %s%s\n' "$VERSION" "$operation" "$(text completed)"
 printf '%s %s\n' "$(text config_label)" "$CONFIG"
 printf '%s %s\n' "$(text data_label)" "$DATA_DIR"
+printf '%s %s\n' "$(text access_label)" "$ACCESS_URL"
 if [ -n "$CREATED_PASSWORD" ]; then
   printf '%s %s\n' "$(text admin_label)" "$ADMIN_EMAIL"
   printf '%s %s\n' "$(text password_label)" "$CREATED_PASSWORD"
