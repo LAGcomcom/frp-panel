@@ -250,7 +250,7 @@ func (c *Client) Download(ctx context.Context, version, requestHost string) (str
 	downloadReq.Header.Set("X-Instance-ID", id)
 	downloadReq.Header.Set("X-Nonce", nonce)
 	downloadReq.Header.Set("X-Signature", signature)
-	downloadResp, err := c.http.Do(downloadReq)
+	downloadResp, err := c.downloadHTTPClient().Do(downloadReq)
 	if err != nil {
 		return "", "", err
 	}

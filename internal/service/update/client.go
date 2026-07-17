@@ -13,6 +13,8 @@ import (
 	"github.com/frp-panel/frp-panel/internal/config"
 )
 
+const updateDownloadTimeout = 5 * time.Minute
+
 type Client struct {
 	cfg        config.UpdateConfig
 	instanceID string
@@ -45,6 +47,14 @@ type CheckResult struct {
 
 func NewClient(cfg config.UpdateConfig, instanceID string) *Client {
 	return &Client{cfg: cfg, instanceID: instanceID, baseURL: strings.TrimRight(cfg.CenterURL, "/"), http: &http.Client{Timeout: 15 * time.Second}}
+}
+
+func (c *Client) downloadHTTPClient() *http.Client {
+	client := *c.http
+	if client.Timeout < updateDownloadTimeout {
+		client.Timeout = updateDownloadTimeout
+	}
+	return &client
 }
 
 func (c *Client) centerURL() string {

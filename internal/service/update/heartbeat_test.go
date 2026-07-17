@@ -25,6 +25,18 @@ func TestHeartbeatIntervalDefaultsAndClampsToFiveSeconds(t *testing.T) {
 	}
 }
 
+func TestUpdateDownloadUsesLongerTimeoutWithoutChangingAPIClient(t *testing.T) {
+	client := NewClient(config.UpdateConfig{}, "instance")
+	downloadClient := client.downloadHTTPClient()
+
+	if client.http.Timeout != 15*time.Second {
+		t.Fatalf("API timeout changed to %s", client.http.Timeout)
+	}
+	if downloadClient.Timeout != updateDownloadTimeout {
+		t.Fatalf("download timeout=%s want=%s", downloadClient.Timeout, updateDownloadTimeout)
+	}
+}
+
 func TestStartSendsSignedHeartbeatAndStops(t *testing.T) {
 	var mu sync.Mutex
 	var publicKey ed25519.PublicKey
