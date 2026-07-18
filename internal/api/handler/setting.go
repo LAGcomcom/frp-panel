@@ -5,6 +5,7 @@ import (
 	"net/smtp"
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
+	"github.com/frp-panel/frp-panel/internal/edition"
 	"github.com/frp-panel/frp-panel/internal/model"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -31,6 +32,11 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 	// Mask smtp_password
 	if result["smtp_password"] != "" {
 		result["smtp_password"] = "********"
+	}
+	if edition.Offline {
+		result["offline_mode"] = "true"
+	} else {
+		result["offline_mode"] = "false"
 	}
 
 	response.Success(c, result)

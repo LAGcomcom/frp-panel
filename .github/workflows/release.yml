@@ -45,6 +45,7 @@ jobs:
           for arch in amd64 arm64; do
             GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o internal/api/bin/agent ./cmd/agent/
             GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "release/frp-panel-linux-$arch" ./cmd/panel/
+            GOARCH="$arch" go build -tags offline -trimpath -ldflags="-s -w" -o "release/frp-panel-offline-linux-$arch" ./cmd/panel/
           done
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             printf '%s\n' "$GITHUB_REF_NAME" > release/version.txt
@@ -53,10 +54,12 @@ jobs:
           fi
           cp install.sh release/install.sh
           cd release
-          sha256sum frp-panel-linux-* version.txt install.sh > checksums.txt
+          sha256sum frp-panel-linux-* frp-panel-offline-linux-* version.txt install.sh > checksums.txt
 
       - name: Test
-        run: go test ./...
+        run: |
+          go test ./...
+          go test -tags offline ./...
 
       - name: Publish GitHub release
         if: github.ref_type == 'tag'
@@ -66,6 +69,8 @@ jobs:
           files: |
             release/frp-panel-linux-amd64
             release/frp-panel-linux-arm64
+            release/frp-panel-offline-linux-amd64
+            release/frp-panel-offline-linux-arm64
             release/version.txt
             release/install.sh
             release/checksums.txt

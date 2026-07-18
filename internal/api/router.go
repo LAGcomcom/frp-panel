@@ -3,6 +3,7 @@ package api
 import (
 	"github.com/frp-panel/frp-panel/internal/api/handler"
 	"github.com/frp-panel/frp-panel/internal/api/middleware"
+	"github.com/frp-panel/frp-panel/internal/edition"
 	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
 	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/frp-panel/frp-panel/internal/service/monitor"
@@ -48,7 +49,6 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 	settingHandler := handler.NewSettingHandler(db)
 	couponHandler := handler.NewCouponHandler(db)
 	announcementHandler := handler.NewAnnouncementHandler(db)
-	updateHandler := handler.NewUpdateHandler(updateClient)
 
 	// WebSocket
 	r.GET("/ws", wsHandler.HandleWebSocket)
@@ -230,9 +230,7 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 		admin.GET("/settings", settingHandler.GetSettings)
 		admin.PUT("/settings", settingHandler.UpdateSettings)
 		admin.POST("/settings/test-smtp", settingHandler.TestSMTP)
-		admin.GET("/update/check", updateHandler.Check)
-		admin.GET("/update/lease", updateHandler.LeaseStatus)
-		admin.GET("/update/download/:version", updateHandler.Download)
+		registerUpdateRoutes(admin, updateClient)
 
 		// Announcements
 		admin.GET("/announcements", announcementHandler.ListAnnouncements)
@@ -244,6 +242,16 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 	}
 
 	return r
+}
+
+func registerUpdateRoutes(admin *gin.RouterGroup, updateClient *updateservice.Client) {
+	if edition.Offline {
+		return
+	}
+	updateHandler := handler.NewUpdateHandler(updateClient)
+	admin.GET("/update/check", updateHandler.Check)
+	admin.GET("/update/lease", updateHandler.LeaseStatus)
+	admin.GET("/update/download/:version", updateHandler.Download)
 }
 
 func corsMiddleware() gin.HandlerFunc {

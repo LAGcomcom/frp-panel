@@ -185,13 +185,17 @@ const updateCheckIntervalMs = 30 * 60 * 1000
 let updateCheckTimer: number | undefined
 
 onMounted(async () => {
+  let offlineMode = false
   try {
     const res = await getSettings()
     if (res.data?.site_title) siteTitle.value = res.data.site_title + ' 管理'
+    offlineMode = res.data?.offline_mode === 'true'
   } catch {}
 
-  await checkForPanelUpdate()
-  updateCheckTimer = window.setInterval(checkForPanelUpdate, updateCheckIntervalMs)
+  if (!offlineMode) {
+    await checkForPanelUpdate()
+    updateCheckTimer = window.setInterval(checkForPanelUpdate, updateCheckIntervalMs)
+  }
 })
 
 onBeforeUnmount(() => {

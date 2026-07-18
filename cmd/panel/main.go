@@ -12,6 +12,7 @@ import (
 
 	"github.com/frp-panel/frp-panel/internal/api"
 	"github.com/frp-panel/frp-panel/internal/config"
+	"github.com/frp-panel/frp-panel/internal/edition"
 	"github.com/frp-panel/frp-panel/internal/model"
 	"github.com/frp-panel/frp-panel/internal/pkg/hash"
 	"github.com/frp-panel/frp-panel/internal/pkg/jwt"
@@ -29,6 +30,7 @@ func main() {
 
 	// Load config
 	cfg := config.MustLoad(*configPath)
+	edition.Apply(cfg)
 
 	// Initialize database
 	var db *gorm.DB
@@ -110,7 +112,9 @@ func main() {
 
 	// Setup router
 	updateClient := updateservice.NewClient(cfg.Update, cfg.Update.InstanceID)
-	updateClient.Start(context.Background())
+	if !edition.Offline {
+		updateClient.Start(context.Background())
+	}
 	r := api.SetupRouter(db, jwtManager, d, alertManager, cfg.FRP.ServerToken, updateClient)
 
 	// Graceful shutdown
