@@ -3,6 +3,9 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
@@ -59,6 +62,109 @@ type ProxyHandler struct {
 
 func NewProxyHandler(db *gorm.DB) *ProxyHandler {
 	return &ProxyHandler{db: db}
+}
+
+type clientConfigAuth struct {
+	Method string `json:"method"`
+	Token  string `json:"token"`
+}
+
+type clientConfigTransport struct {
+	TCPMux bool `json:"tcpMux"`
+}
+
+type clientConfigMetadata struct {
+	APIKey   string `json:"apikey"`
+	ServerID string `json:"server_id"`
+}
+
+type clientConfig struct {
+	ServerID   uint                    `json:"serverId"`
+	ServerName string                  `json:"serverName"`
+	FRPVersion string                  `json:"frpVersion"`
+	ServerAddr string                  `json:"serverAddr"`
+	ServerPort int                     `json:"serverPort"`
+	Auth       clientConfigAuth        `json:"auth"`
+	Transport  clientConfigTransport   `json:"transport"`
+	Metadatas  clientConfigMetadata    `json:"metadatas"`
+	Proxies    []frpconfig.ProxyConfig `json:"proxies"`
+}
+
+func (h *ProxyHandler) GetClientConfigsByAPIKey(c *gin.Context) {
+	if c.Request.URL.RawQuery != "" {
+		response.Unauthorized(c, "API key must be provided in a request header")
+		return
+	}
+
+	apiKey := strings.TrimSpace(c.GetHeader("X-API-Key"))
+	if apiKey == "" {
+		fields := strings.Fields(c.GetHeader("Authorization"))
+		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+			apiKey = fields[1]
+		}
+	}
+	if apiKey == "" || len(apiKey) > 256 {
+		response.Unauthorized(c, "invalid API key")
+		return
+	}
+
+	user, err := accesscontrol.LoadUserByAPIKey(h.db, apiKey)
+	if err != nil || user.Status != "active" {
+		response.Unauthorized(c, "invalid API key")
+		return
+	}
+
+	var proxies []model.Proxy
+	if err := h.db.Where("user_id = ? AND enabled = ?", user.ID, true).
+		Preload("Server").Order("server_id asc, id asc").Find(&proxies).Error; err != nil {
+		response.InternalError(c, "failed to load client configs")
+		return
+	}
+
+	grouped := make(map[uint][]model.Proxy)
+	servers := make(map[uint]model.Server)
+	serverOrder := make([]uint, 0)
+	for _, proxy := range proxies {
+		server := proxy.Server
+		if server.ID == 0 || server.Status != "running" || !server.PluginAuthEnabled {
+			continue
+		}
+		if _, exists := grouped[server.ID]; !exists {
+			allowed, accessErr := accesscontrol.CanAccessServer(h.db, user, server.ID)
+			if accessErr != nil {
+				response.InternalError(c, "failed to check server access")
+				return
+			}
+			if !allowed {
+				continue
+			}
+			serverOrder = append(serverOrder, server.ID)
+			servers[server.ID] = server
+		}
+		grouped[server.ID] = append(grouped[server.ID], proxy)
+	}
+
+	configs := make([]clientConfig, 0, len(serverOrder))
+	for _, serverID := range serverOrder {
+		server := servers[serverID]
+		generated, buildErr := frpconfig.BuildFrpcConfig(&server, user, grouped[serverID])
+		if buildErr != nil {
+			response.InternalError(c, "failed to generate client config")
+			return
+		}
+		configs = append(configs, clientConfig{
+			ServerID: server.ID, ServerName: server.Name, FRPVersion: server.FrpVersion,
+			ServerAddr: generated.ServerAddr, ServerPort: generated.ServerPort,
+			Auth:      clientConfigAuth{Method: "token", Token: apiKey},
+			Transport: clientConfigTransport{TCPMux: true},
+			Metadatas: clientConfigMetadata{APIKey: apiKey, ServerID: strconv.FormatUint(uint64(server.ID), 10)},
+			Proxies:   generated.Proxies,
+		})
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	response.Success(c, gin.H{"generatedAt": time.Now().UTC(), "configs": configs})
 }
 
 func (h *ProxyHandler) requireServerAccess(c *gin.Context, userID, serverID uint) bool {

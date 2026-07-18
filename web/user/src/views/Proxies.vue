@@ -4,6 +4,9 @@
       <div class="page-header">
         <span class="page-title">我的代理</span>
 		<div class="header-actions">
+		  <el-button @click="showApiDocs = true">
+			<el-icon><Guide /></el-icon>API 文档
+		  </el-button>
 		  <el-button :disabled="configServers.length === 0" @click="openConfigDialog">
 			<el-icon><Document /></el-icon>FRPC 配置
 		  </el-button>
@@ -32,20 +35,45 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="远程地址">
-        <template #default="{ row }">{{ displayAddr(row) }}</template>
+      <el-table-column label="远程地址" min-width="190">
+        <template #default="{ row }">
+          <div class="remote-address">
+            <span class="text-mono">{{ displayAddr(row) }}</span>
+            <el-tooltip content="复制远程地址" placement="top">
+              <el-button
+                link
+                class="copy-address-button"
+                :disabled="displayAddr(row) === '-'"
+                :aria-label="`复制代理 ${row.name} 的远程地址`"
+                @click="copyRemoteAddress(row)"
+              >
+                <el-icon><CopyDocument /></el-icon>
+              </el-button>
+            </el-tooltip>
+          </div>
+        </template>
       </el-table-column>
       <el-table-column label="流量" width="160">
         <template #default="{ row }">
           <span class="text-mono" style="font-size: 12px">↓{{ formatBytes(row.traffic_in) }} ↑{{ formatBytes(row.traffic_out) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="180">
+      <el-table-column label="操作" width="260">
         <template #default="{ row }">
-          <el-button v-if="!row.enabled" size="small" type="success" @click="handleEnable(row)">启用</el-button>
-          <el-button v-else size="small" type="warning" @click="handleDisable(row)">禁用</el-button>
-          <el-button size="small" @click="$router.push(`/proxies/create?edit=${row.id}`)">编辑</el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          <div class="action-btns">
+            <el-button
+              size="small"
+              :loading="loadingConfigServerIds.includes(Number(row.server?.id))"
+              :disabled="!row.enabled"
+              @click="copyProxyConfig(row)"
+            >
+              <el-icon><CopyDocument /></el-icon>{{ getCachedConfig(row) ? '复制配置' : '生成配置' }}
+            </el-button>
+            <el-button v-if="!row.enabled" size="small" type="success" @click="handleEnable(row)">启用</el-button>
+            <el-button v-else size="small" type="warning" @click="handleDisable(row)">禁用</el-button>
+            <el-button size="small" @click="$router.push(`/proxies/create?edit=${row.id}`)">编辑</el-button>
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -78,6 +106,52 @@
 		</el-button>
 	  </template>
 	</el-dialog>
+
+	<el-dialog v-model="showApiDocs" title="客户端配置 API" width="min(720px, 92vw)" append-to-body>
+	  <div class="api-docs">
+		<section class="api-doc-section">
+		  <div class="api-doc-heading">请求地址</div>
+		  <div class="api-code-row">
+			<code>{{ apiEndpoint }}</code>
+			<el-tooltip content="复制请求地址" placement="top">
+			  <el-button link aria-label="复制 API 请求地址" @click="copyApiText(apiEndpoint, '请求地址')">
+				<el-icon><CopyDocument /></el-icon>
+			  </el-button>
+			</el-tooltip>
+		  </div>
+		</section>
+
+		<section class="api-doc-section">
+		  <div class="api-doc-heading">身份验证</div>
+		  <p>使用“个人设置”中的用户 API Key，请勿使用节点 Token，也不要把 Key 放在 URL 查询参数中。</p>
+		  <div class="api-auth-lines">
+			<code>X-API-Key: YOUR_API_KEY</code>
+			<span>或</span>
+			<code>Authorization: Bearer YOUR_API_KEY</code>
+		  </div>
+		</section>
+
+		<section class="api-doc-section">
+		  <div class="api-doc-heading-row">
+			<div class="api-doc-heading">请求示例</div>
+			<el-button size="small" @click="copyApiText(apiCurlExample, '请求示例')">
+			  <el-icon><CopyDocument /></el-icon>复制
+			</el-button>
+		  </div>
+		  <pre class="api-code-block">{{ apiCurlExample }}</pre>
+		</section>
+
+		<section class="api-doc-section">
+		  <div class="api-doc-heading">响应格式</div>
+		  <pre class="api-code-block api-response-example">{{ apiResponseExample }}</pre>
+		</section>
+
+		<section class="api-doc-section api-doc-notes">
+		  <div class="api-doc-heading">返回规则</div>
+		  <p>仅返回当前有效账号可用节点上的已启用代理，并按节点分组。已禁用代理、无权访问的用户组节点以及 FRPS 节点密钥、SSH 凭据和插件密钥不会返回。</p>
+		</section>
+	  </div>
+	</el-dialog>
   </el-card>
 </template>
 
@@ -85,14 +159,48 @@
 import { computed, ref, onMounted } from 'vue'
 import { getProxies, getFrpcConfig, enableProxy, disableProxy, deleteProxy } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Document, Download, RefreshRight } from '@element-plus/icons-vue'
+import { CopyDocument, Document, Download, Guide, RefreshRight } from '@element-plus/icons-vue'
 
 const proxies = ref<any[]>([])
 const loading = ref(false)
 const showConfigDialog = ref(false)
+const showApiDocs = ref(false)
 const configServerId = ref<number | null>(null)
 const configContent = ref('')
 const generatingConfig = ref(false)
+const configCache = ref<Record<number, string>>({})
+const loadingConfigServerIds = ref<number[]>([])
+
+const apiEndpoint = computed(() => `${window.location.origin}/api/client/configs`)
+const apiCurlExample = computed(() => `curl -H "X-API-Key: YOUR_API_KEY" "${apiEndpoint.value}"`)
+const apiResponseExample = `{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "generatedAt": "2026-07-18T08:00:00Z",
+    "configs": [
+      {
+        "serverId": 1,
+        "serverName": "节点名称",
+        "frpVersion": "0.68.0",
+        "serverAddr": "203.0.113.10",
+        "serverPort": 7000,
+        "auth": { "method": "token", "token": "YOUR_API_KEY" },
+        "transport": { "tcpMux": true },
+        "metadatas": { "apikey": "YOUR_API_KEY", "server_id": "1" },
+        "proxies": [
+          {
+            "name": "remote-desktop",
+            "type": "tcp",
+            "localIP": "127.0.0.1",
+            "localPort": 3389,
+            "remotePort": 6000
+          }
+        ]
+      }
+    ]
+  }
+}`
 
 const configServers = computed(() => {
   const servers = new Map<number, any>()
@@ -109,26 +217,61 @@ async function fetchData() {
   try {
     const res = await getProxies({ size: 1000 })
     proxies.value = res.data.list
+    await preloadConfigCache()
   } finally {
     loading.value = false
   }
 }
 
+async function preloadConfigCache() {
+  const serverIds = configServers.value.map((server: any) => Number(server.id)).filter(Boolean)
+  await Promise.all(serverIds.map(serverId => loadServerConfig(serverId, true)))
+}
+
+async function loadServerConfig(serverId: number, force = false): Promise<string> {
+  if (!serverId) return ''
+  if (!force && configCache.value[serverId]) return configCache.value[serverId]
+  if (force) invalidateServerConfig(serverId)
+  if (!loadingConfigServerIds.value.includes(serverId)) {
+	loadingConfigServerIds.value = [...loadingConfigServerIds.value, serverId]
+  }
+  try {
+	const res = await getFrpcConfig(serverId)
+	const config = res.data.config || ''
+	configCache.value = { ...configCache.value, [serverId]: config }
+	return config
+  } catch {
+	return ''
+  } finally {
+	loadingConfigServerIds.value = loadingConfigServerIds.value.filter(id => id !== serverId)
+  }
+}
+
+function invalidateServerConfig(serverId: number) {
+  if (!serverId || !configCache.value[serverId]) return
+  const nextCache = { ...configCache.value }
+  delete nextCache[serverId]
+  configCache.value = nextCache
+}
+
 async function handleEnable(row: any) {
   await enableProxy(row.id)
+  invalidateServerConfig(Number(row.server?.id))
   ElMessage.success('代理已启用')
   fetchData()
 }
 
 async function handleDisable(row: any) {
   await disableProxy(row.id)
+  invalidateServerConfig(Number(row.server?.id))
   ElMessage.success('代理已禁用')
   fetchData()
 }
 
 async function handleDelete(row: any) {
-  await ElMessageBox.confirm(`确认删除代理"${row.name}"？`, '确认删除', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除代理“${row.name}”？`, '确认删除', { type: 'warning' })
   await deleteProxy(row.id)
+  invalidateServerConfig(Number(row.server?.id))
   ElMessage.success('代理已删除')
   fetchData()
 }
@@ -148,6 +291,7 @@ async function generateConfig() {
   try {
 	const res = await getFrpcConfig(configServerId.value)
 	configContent.value = res.data.config || ''
+	configCache.value = { ...configCache.value, [configServerId.value]: configContent.value }
   } finally {
 	generatingConfig.value = false
   }
@@ -155,19 +299,75 @@ async function generateConfig() {
 
 async function copyConfig() {
   if (!configContent.value) return
-  try {
-	await navigator.clipboard.writeText(configContent.value)
-  } catch {
-	const textarea = document.createElement('textarea')
-	textarea.value = configContent.value
-	textarea.style.position = 'fixed'
-	textarea.style.opacity = '0'
-	document.body.appendChild(textarea)
-	textarea.select()
-	document.execCommand('copy')
-	document.body.removeChild(textarea)
+  if (!await copyText(configContent.value)) {
+	ElMessage.error('复制失败，请在配置框中手动复制')
+	return
   }
   ElMessage.success('配置已复制')
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+	if (!navigator.clipboard || !window.isSecureContext) throw new Error('clipboard unavailable')
+	await navigator.clipboard.writeText(text)
+	return true
+  } catch {
+	let textarea: HTMLTextAreaElement | null = null
+	try {
+	  textarea = document.createElement('textarea')
+	  textarea.value = text
+	  textarea.style.position = 'fixed'
+	  textarea.style.opacity = '0'
+	  document.body.appendChild(textarea)
+	  textarea.select()
+	  return document.execCommand('copy')
+	} catch {
+	  return false
+	} finally {
+	  textarea?.remove()
+	}
+  }
+}
+
+async function copyRemoteAddress(row: any) {
+  const address = displayAddr(row)
+  if (address === '-') return
+  if (!await copyText(address)) {
+	ElMessage.error('复制失败，请手动选择远程地址')
+	return
+  }
+  ElMessage.success('远程地址已复制')
+}
+
+async function copyApiText(text: string, label: string) {
+  if (!await copyText(text)) {
+	ElMessage.error(`${label}复制失败，请手动选择复制`)
+	return
+  }
+  ElMessage.success(`${label}已复制`)
+}
+
+async function copyProxyConfig(row: any) {
+  const serverId = Number(row.server?.id)
+  let config = getCachedConfig(row)
+  if (!config) {
+	config = await loadServerConfig(serverId)
+	if (config) {
+	  ElMessage.info('配置已生成，请再次点击复制')
+	} else {
+	  ElMessage.error('配置生成失败，请稍后重试')
+	}
+	return
+  }
+  if (!await copyText(config)) {
+	ElMessage.error('复制失败，请点击顶部 FRPC 配置后手动复制')
+	return
+  }
+  ElMessage.success('FRPC 配置已复制，包含该节点的全部已启用代理')
+}
+
+function getCachedConfig(row: any): string {
+  return configCache.value[Number(row.server?.id)] || ''
 }
 
 function downloadConfig() {
@@ -208,5 +408,129 @@ function formatBytes(bytes: number): string {
 .header-actions {
   display: flex;
   gap: 8px;
+}
+
+.remote-address {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.remote-address .text-mono {
+  overflow-wrap: anywhere;
+}
+
+.copy-address-button {
+  flex: 0 0 28px;
+  width: 28px !important;
+  min-width: 28px !important;
+  padding: 0 !important;
+}
+
+.action-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.action-btns :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.api-docs {
+  color: var(--el-text-color-regular);
+}
+
+.api-doc-section + .api-doc-section {
+  margin-top: 20px;
+}
+
+.api-doc-heading,
+.api-doc-heading-row {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.api-doc-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.api-doc-section p {
+  margin: 8px 0 0;
+  line-height: 1.7;
+}
+
+.api-code-row,
+.api-auth-lines {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.api-code-row {
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+.api-code-row code,
+.api-auth-lines code {
+  overflow-wrap: anywhere;
+}
+
+.api-auth-lines {
+  flex-wrap: wrap;
+}
+
+.api-auth-lines code {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+.api-code-block {
+  max-height: 380px;
+  margin: 8px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.api-response-example {
+  max-height: 320px;
+}
+
+.api-doc-notes {
+  padding-top: 16px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+@media (max-width: 768px) {
+  .page-header {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
 }
 </style>

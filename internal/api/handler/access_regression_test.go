@@ -235,6 +235,122 @@ func TestExpiredPlanGroupHidesServersAndProxies(t *testing.T) {
 	}
 }
 
+func TestClientConfigsByAPIKeyReturnsOwnedEnabledProxiesAsJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAccessRegressionDB(t, "client-config-api")
+	server := model.Server{
+		Name: "node-a", IP: "203.0.113.10", BindPort: 7000, FrpVersion: "0.68.0",
+		Status: "running", PluginAuthEnabled: true, Token: "must-not-leak",
+		SSHPassword: "ssh-password-must-not-leak", SSHPrivateKey: "private-key-must-not-leak",
+		PluginSecret: "plugin-secret-must-not-leak", DashboardPassword: "dashboard-password-must-not-leak",
+	}
+	restrictedServer := model.Server{
+		Name: "restricted-node", IP: "203.0.113.11", BindPort: 7000, FrpVersion: "0.68.0",
+		Status: "running", PluginAuthEnabled: true, Token: "restricted-token-must-not-leak",
+	}
+	group := model.UserGroup{Name: "client-config-group"}
+	for _, value := range []interface{}{&server, &restrictedServer, &group} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Model(&group).Association("Servers").Replace([]model.Server{server}); err != nil {
+		t.Fatal(err)
+	}
+	user := model.User{Email: "config-api@example.com", Password: "x", InviteCode: "config-api", APIKey: "client-config-key", Status: "active", GroupID: &group.ID, GroupSource: "manual"}
+	other := model.User{Email: "other-config@example.com", Password: "x", InviteCode: "other-config", APIKey: "other-config-key", Status: "active"}
+	for _, value := range []interface{}{&user, &other} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	proxies := []model.Proxy{
+		{UserID: user.ID, ServerID: server.ID, Name: "desktop", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 3389, RemotePort: 6000, Enabled: true},
+		{UserID: user.ID, ServerID: server.ID, Name: "web", Type: "http", LocalIP: "127.0.0.1", LocalPort: 8080, CustomDomains: `["app.example.com"]`, Enabled: true},
+		{UserID: user.ID, ServerID: server.ID, Name: "disabled", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6001, Enabled: false},
+		{UserID: user.ID, ServerID: restrictedServer.ID, Name: "restricted", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6003, Enabled: true},
+		{UserID: other.ID, ServerID: server.ID, Name: "other-user", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6002, Enabled: true},
+	}
+	if err := db.Create(&proxies).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.GET("/client/configs", NewProxyHandler(db).GetClientConfigsByAPIKey)
+	request := httptest.NewRequest(http.MethodGet, "/client/configs", nil)
+	request.Header.Set("X-API-Key", user.APIKey)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	var payload struct {
+		Data struct {
+			Configs []clientConfig `json:"configs"`
+		} `json:"data"`
+	}
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &payload) != nil {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache control=%q", recorder.Header().Get("Cache-Control"))
+	}
+	if len(payload.Data.Configs) != 1 {
+		t.Fatalf("configs=%d body=%s", len(payload.Data.Configs), recorder.Body.String())
+	}
+	config := payload.Data.Configs[0]
+	if config.ServerAddr != server.IP || config.ServerPort != server.BindPort || config.Auth.Token != user.APIKey || len(config.Proxies) != 2 {
+		t.Fatalf("unexpected config: %#v", config)
+	}
+	for _, forbidden := range []string{
+		server.Token, server.SSHPassword, server.SSHPrivateKey, server.PluginSecret, server.DashboardPassword,
+		restrictedServer.Token, other.APIKey, "disabled", "restricted",
+	} {
+		if bytes.Contains(recorder.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("response leaked %q: %s", forbidden, recorder.Body.String())
+		}
+	}
+	queryKey := httptest.NewRecorder()
+	router.ServeHTTP(queryKey, httptest.NewRequest(http.MethodGet, "/client/configs?key="+user.APIKey, nil))
+	if queryKey.Code != http.StatusUnauthorized {
+		t.Fatalf("query-string key status=%d body=%s", queryKey.Code, queryKey.Body.String())
+	}
+	queryAndHeaderRequest := httptest.NewRequest(http.MethodGet, "/client/configs?key="+user.APIKey, nil)
+	queryAndHeaderRequest.Header.Set("X-API-Key", user.APIKey)
+	queryAndHeader := httptest.NewRecorder()
+	router.ServeHTTP(queryAndHeader, queryAndHeaderRequest)
+	if queryAndHeader.Code != http.StatusUnauthorized {
+		t.Fatalf("query-string key with valid header status=%d body=%s", queryAndHeader.Code, queryAndHeader.Body.String())
+	}
+
+	bearerRequest := httptest.NewRequest(http.MethodGet, "/client/configs", nil)
+	bearerRequest.Header.Set("Authorization", "Bearer "+user.APIKey)
+	bearer := httptest.NewRecorder()
+	router.ServeHTTP(bearer, bearerRequest)
+	if bearer.Code != http.StatusOK {
+		t.Fatalf("bearer status=%d body=%s", bearer.Code, bearer.Body.String())
+	}
+
+	for _, authorization := range []string{"Bearer", "Basic " + user.APIKey, "Bearer " + user.APIKey + " extra"} {
+		req := httptest.NewRequest(http.MethodGet, "/client/configs", nil)
+		req.Header.Set("Authorization", authorization)
+		responseRecorder := httptest.NewRecorder()
+		router.ServeHTTP(responseRecorder, req)
+		if responseRecorder.Code != http.StatusUnauthorized {
+			t.Fatalf("malformed authorization %q status=%d body=%s", authorization, responseRecorder.Code, responseRecorder.Body.String())
+		}
+	}
+
+	if err := db.Model(&user).Update("status", "banned").Error; err != nil {
+		t.Fatal(err)
+	}
+	inactiveRequest := httptest.NewRequest(http.MethodGet, "/client/configs", nil)
+	inactiveRequest.Header.Set("X-API-Key", user.APIKey)
+	inactive := httptest.NewRecorder()
+	router.ServeHTTP(inactive, inactiveRequest)
+	if inactive.Code != http.StatusUnauthorized {
+		t.Fatalf("inactive user status=%d body=%s", inactive.Code, inactive.Body.String())
+	}
+}
+
 func openAccessRegressionDB(t *testing.T, name string) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+name+"?mode=memory&cache=shared"), &gorm.Config{})
