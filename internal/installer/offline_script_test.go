@@ -68,6 +68,18 @@ func TestOfflineInstallerLifecycle(t *testing.T) {
 	if _, err = os.Stat(unitPath); err != nil {
 		t.Fatalf("systemd unit missing: %v", err)
 	}
+	unitBytes, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
+	} {
+		if !strings.Contains(string(unitBytes), expected) {
+			t.Fatalf("systemd unit missing %q:\n%s", expected, unitBytes)
+		}
+	}
 
 	writeAssetAndChecksum(t, packageDir, []byte("panel-v2"))
 	runInstaller(t, packageDir, env, "--update", "--yes")
@@ -196,6 +208,36 @@ func TestOfflineInstallerCleansFailedFirstInstall(t *testing.T) {
 	for _, path := range []string{filepath.Join(installDir, "frp-panel"), filepath.Join(configDir, "config.yaml"), filepath.Join(dataDir, "frp-panel.db"), unitPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("failed first install left %s: %v", path, err)
+		}
+	}
+}
+
+func TestOfflineInstallerRejectsOccupiedPortBeforeInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX installer integration test")
+	}
+	packageDir := prepareOfflinePackage(t, []byte("panel"), true)
+	root := t.TempDir()
+	installDir := filepath.Join(root, "install")
+	configDir := filepath.Join(root, "config")
+	unitPath := filepath.Join(root, "systemd", "frp-panel.service")
+	env := append(os.Environ(),
+		"PATH="+prepareMocks(t)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FRP_PANEL_INIT=systemd",
+		"FRP_PANEL_INSTALL_DIR="+installDir,
+		"FRP_PANEL_DATA_DIR="+filepath.Join(root, "data"),
+		"FRP_PANEL_CONFIG_DIR="+configDir,
+		"FRP_PANEL_SYSTEMD_UNIT="+unitPath,
+		"FRP_PANEL_PORT=8080",
+		"MOCK_PORT_IN_USE=8080",
+	)
+	output, err := runInstallerError(packageDir, env, "--install", "--yes")
+	if err == nil || !strings.Contains(output, "端口已被其他程序占用") {
+		t.Fatalf("occupied port was not rejected: err=%v output=%s", err, output)
+	}
+	for _, path := range []string{filepath.Join(installDir, "frp-panel"), filepath.Join(configDir, "config.yaml"), unitPath} {
+		if _, err = os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("occupied-port rejection created %s: %v", path, err)
 		}
 	}
 }
@@ -358,6 +400,8 @@ func prepareMocks(t *testing.T) string {
 		"rc-update":  "#!/bin/sh\nexit 0\n",
 		"chown":      "#!/bin/sh\nexit 0\n",
 		"hostname":   "#!/bin/sh\nif [ \"${1:-}\" = -I ]; then echo 192.0.2.10; else echo test-host; fi\n",
+		"ss":         "#!/bin/sh\nif [ -n \"${MOCK_PORT_IN_USE:-}\" ]; then echo \"LISTEN 0 4096 0.0.0.0:${MOCK_PORT_IN_USE} 0.0.0.0:*\"; fi\n",
+		"journalctl": "#!/bin/sh\necho \"mock service startup failure\"\n",
 	}
 	for name, content := range mocks {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0755); err != nil {

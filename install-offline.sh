@@ -56,6 +56,9 @@ text() {
     zh:poller_prompt) echo "节点轮询间隔秒数：" ;;
     zh:webhook_prompt) echo "插件回调地址（输入 - 清空）：" ;;
     zh:port_invalid) echo "端口必须是 1 到 65535 之间的数字。" ;;
+    zh:port_in_use) echo "所选端口已被其他程序占用，请更换端口后重试：" ;;
+    zh:low_port_openrc) echo "OpenRC 使用 1 到 1023 端口需要 setcap；Alpine 可先安装 libcap，或者改用 1024 以上端口。" ;;
+    zh:capability_failed) echo "无法授予面板绑定低端口的权限，请改用 1024 以上端口。" ;;
     zh:domain_invalid) echo "域名格式无效，请输入 example.com 或带 http/https 的地址。" ;;
     zh:email_invalid) echo "管理员邮箱格式无效。" ;;
     zh:frp_version_invalid) echo "FRP 版本格式无效，例如 0.68.0。" ;;
@@ -65,6 +68,7 @@ text() {
     zh:uninstall_prompt) echo "确定卸载面板程序和服务吗？配置与数据会保留。[y/N]：" ;;
     zh:confirm_needed) echo "非交互卸载必须增加 --yes。" ;;
     zh:service_failed) echo "服务启动失败，已经恢复原二进制和配置。" ;;
+    zh:diagnostic_saved) echo "详细启动日志已保存到：" ;;
     zh:stop_failed) echo "无法确认旧服务已经停止，未修改任何程序或数据。" ;;
     zh:transaction_failed) echo "操作失败，已经恢复原程序、配置、数据库和服务。" ;;
     zh:done) echo "操作完成。" ;;
@@ -109,6 +113,9 @@ text() {
     en:poller_prompt) echo "Node polling interval in seconds:" ;;
     en:webhook_prompt) echo "Plugin callback URL (enter - to clear):" ;;
     en:port_invalid) echo "Port must be a number from 1 to 65535." ;;
+    en:port_in_use) echo "The selected port is already in use; choose another port:" ;;
+    en:low_port_openrc) echo "OpenRC requires setcap for ports 1 through 1023; install libcap or use a port above 1023." ;;
+    en:capability_failed) echo "Could not grant permission to bind a privileged port; use a port above 1023." ;;
     en:domain_invalid) echo "Invalid domain. Enter example.com or an http/https URL." ;;
     en:email_invalid) echo "Invalid administrator email." ;;
     en:frp_version_invalid) echo "Invalid FRP version; for example, use 0.68.0." ;;
@@ -118,6 +125,7 @@ text() {
     en:uninstall_prompt) echo "Remove the panel program and service? Config and data are kept. [y/N]:" ;;
     en:confirm_needed) echo "Non-interactive uninstall requires --yes." ;;
     en:service_failed) echo "Service startup failed; the previous binary and config were restored." ;;
+    en:diagnostic_saved) echo "Startup details were saved to:" ;;
     en:stop_failed) echo "The existing service could not be confirmed stopped; no program or data was changed." ;;
     en:transaction_failed) echo "The operation failed; the previous program, config, database, and service were restored." ;;
     en:done) echo "Operation completed." ;;
@@ -348,6 +356,44 @@ prepare_access_url() {
   esac
 }
 
+validate_port() {
+  port=$1
+  case "$port" in ''|*[!0-9]*) text port_invalid >&2; exit 1 ;; esac
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then text port_invalid >&2; exit 1; fi
+  if [ "$INIT" = "openrc" ] && [ "$port" -lt 1024 ] && ! command -v setcap >/dev/null 2>&1; then
+    text low_port_openrc >&2
+    exit 1
+  fi
+}
+
+port_is_listening() {
+  port=$1
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" { found=1 } END { exit !found }'
+    return
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" { found=1 } END { exit !found }'
+    return
+  fi
+  return 1
+}
+
+require_available_port() {
+  port=$1
+  if port_is_listening "$port"; then
+    printf '%s %s\n' "$(text port_in_use)" "$port" >&2
+    exit 1
+  fi
+}
+
+prepare_binary_port_access() {
+  port=$1
+  if [ "$INIT" = "openrc" ] && [ "$port" -lt 1024 ]; then
+    setcap cap_net_bind_service=+ep "$INSTALL_DIR/frp-panel" || return 1
+  fi
+}
+
 create_user_and_dirs() {
   if ! id frp-panel >/dev/null 2>&1; then
     if command -v useradd >/dev/null 2>&1; then
@@ -370,8 +416,8 @@ write_config_if_missing() {
   if [ -f "$CONFIG" ]; then return; fi
 
   PORT=$(prompt_value "$(text port_prompt)" "8080" "${FRP_PANEL_PORT:-}")
-  case "$PORT" in ''|*[!0-9]*) text port_invalid >&2; exit 1 ;; esac
-  if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then text port_invalid >&2; exit 1; fi
+  validate_port "$PORT"
+  if [ "${HAD_BINARY:-0}" = "0" ]; then require_available_port "$PORT"; fi
 
   PANEL_DOMAIN=$(prompt_value "$(text domain_prompt)" "" "${FRP_PANEL_DOMAIN:-}")
   ADMIN_EMAIL=$(prompt_value "$(text email_prompt)" "admin@example.com" "${FRP_PANEL_ADMIN_EMAIL:-}")
@@ -451,6 +497,8 @@ User=frp-panel
 Group=frp-panel
 WorkingDirectory=$DATA_DIR
 ExecStart=$INSTALL_DIR/frp-panel -config $CONFIG_DIR/config.yaml
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=1048576
@@ -497,6 +545,19 @@ service_healthy() {
     attempts=$((attempts + 1))
   done
   return 1
+}
+
+save_service_diagnostics() {
+  diagnostic="$DATA_DIR/install-error.log"
+  if [ "$INIT" = "systemd" ] && command -v journalctl >/dev/null 2>&1; then
+    journalctl -u "$SERVICE_NAME" -n 100 --no-pager > "$diagnostic" 2>&1 || true
+  elif [ -f /var/log/frp-panel.log ]; then
+    tail -n 100 /var/log/frp-panel.log > "$diagnostic" 2>&1 || true
+  else
+    printf '%s\n' "No service log was available." > "$diagnostic"
+  fi
+  chmod 0640 "$diagnostic" >/dev/null 2>&1 || true
+  printf '%s %s\n' "$(text diagnostic_saved)" "$diagnostic" >&2
 }
 
 yaml_value() {
@@ -563,8 +624,8 @@ configure_panel() {
   [ "$new_mirror" = "-" ] && new_mirror=""
   [ "$new_webhook" = "-" ] && new_webhook=""
 
-  case "$new_port" in ''|*[!0-9]*) text port_invalid >&2; exit 1 ;; esac
-  if [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then text port_invalid >&2; exit 1; fi
+  validate_port "$new_port"
+  if [ "$new_port" != "$current_port" ]; then require_available_port "$new_port"; fi
   if [ -n "$new_domain" ]; then prepare_access_url "$new_domain" "$new_port"; else ACCESS_URL="http://$(detect_ip):$new_port"; fi
   if ! printf '%s' "$new_version" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}([._-][A-Za-z0-9.-]+)?$'; then text frp_version_invalid >&2; exit 1; fi
   valid_optional_url "$new_mirror" || { text url_invalid >&2; exit 1; }
@@ -591,7 +652,14 @@ configure_panel() {
   fi
   chmod 0640 "$CONFIG"
   chown root:frp-panel "$CONFIG"
+  if ! prepare_binary_port_access "$new_port"; then
+    cp -p "$backup" "$CONFIG"
+    start_service >/dev/null 2>&1 || true
+    text capability_failed >&2
+    exit 1
+  fi
   if ! start_service || ! service_healthy; then
+    save_service_diagnostics
     stop_service
     cp -p "$backup" "$CONFIG"
     start_service >/dev/null 2>&1 || true
@@ -687,9 +755,15 @@ write_config_if_missing
 [ -n "${ACCESS_URL:-}" ] || read_access_url
 install -m 0755 "$ASSET" "$INSTALL_DIR/frp-panel.new"
 mv -f "$INSTALL_DIR/frp-panel.new" "$INSTALL_DIR/frp-panel"
+if ! prepare_binary_port_access "$PORT"; then
+  restore_failed_install
+  text capability_failed >&2
+  exit 1
+fi
 write_service
 
 if ! start_service || ! service_healthy; then
+  save_service_diagnostics
   restore_failed_install
   text service_failed >&2
   exit 1
