@@ -11,6 +11,8 @@ Release artifacts use these names:
 - `frp-panel-offline-linux-amd64`
 - `frp-panel-offline-linux-arm64`
 
+For complete manual file deployment, optional source rebuilding, service configuration, verification, upgrade, and troubleshooting steps, see [offline-source-deployment.md](offline-source-deployment.md).
+
 ## Disabled update-center connections
 
 The offline binary clears the update-center configuration before services start. It does not start the update supervisor and does not register these routes:
