@@ -13,6 +13,8 @@ Release artifacts use these names:
 
 For complete manual file deployment, optional source rebuilding, service configuration, verification, upgrade, and troubleshooting steps, see [offline-source-deployment.md](offline-source-deployment.md).
 
+The customer ZIP also includes `install-offline.sh`, which installs or updates from the local prebuilt files without downloading the panel.
+
 ## Disabled update-center connections
 
 The offline binary clears the update-center configuration before services start. It does not start the update supervisor and does not register these routes:

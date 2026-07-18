@@ -1,6 +1,6 @@
 # FRP Panel 更新中心离线版：文件手工部署指南
 
-本文档适用于 `frp-panel-offline-v1.2.7.zip`，主流程使用包内已经生成的 Linux amd64/arm64 二进制手工安装和维护更新中心离线版，不使用一键安装脚本。只有需要修改或复现构建时才从源码重新编译。
+本文档适用于 `frp-panel-offline-v1.2.7.zip`。客户可以使用包内 `install-offline.sh` 一键部署，也可以按本文步骤手工安装已经生成的 Linux amd64/arm64 二进制。只有需要修改或复现构建时才从源码重新编译。
 
 ## 1. 版本边界
 
@@ -33,6 +33,7 @@ frp-panel-offline-v1.2.7/
 │   ├── frp-panel-offline-linux-amd64
 │   └── frp-panel-offline-linux-arm64
 ├── README-OFFLINE.md
+├── install-offline.sh
 ├── PACKAGE-CONTENTS.txt
 └── SHA256SUMS.txt
 ```
@@ -140,7 +141,51 @@ sha256sum -c SHA256SUMS.txt
 
 ## 5. 使用包内已生成二进制
 
-这是推荐的客户部署方式：使用已生成文件手工配置，不运行一键安装脚本，也不需要在服务器上重新编译。
+推荐直接使用包内已经生成的文件，不需要在服务器上安装 Go、Node.js 或重新编译。可以选择一键脚本或后面的纯手工命令。
+
+如果希望脚本自动完成本节以及后续用户、目录、配置和服务创建，可在压缩包根目录执行：
+
+```sh
+sudo sh install-offline.sh
+```
+
+非交互安装使用默认端口和随机管理员密码：
+
+```sh
+sudo sh install-offline.sh --install --yes
+```
+
+修改配置、更新和卸载：
+
+```sh
+sudo sh install-offline.sh --configure
+sudo sh install-offline.sh --update
+sudo sh install-offline.sh --uninstall
+```
+
+脚本只读取当前压缩包的 `bin/` 和 `SHA256SUMS.txt`，不会联网下载面板文件。卸载默认保留 `/etc/frp-panel` 和 `/var/lib/frp-panel`。
+
+“修改配置”菜单支持调整：
+
+- 面板监听端口；
+- 显示用访问域名；
+- 默认 FRP 版本；
+- GitHub 下载镜像；
+- 节点轮询间隔；
+- FRPS 插件回调地址。
+
+修改前会备份配置，重启失败会自动恢复。已有管理员邮箱和密码需要在面板账户功能中修改，不能通过改 YAML 重置。
+
+非交互修改示例：
+
+```sh
+sudo FRP_PANEL_PORT=9090 \
+  FRP_PANEL_DOMAIN=https://panel.example.com \
+  FRP_PANEL_DEFAULT_FRP_VERSION=0.68.0 \
+  FRP_PANEL_GITHUB_MIRROR=https://mirror.example.com \
+  FRP_PANEL_POLLER_INTERVAL=45 \
+  sh install-offline.sh --configure --yes
+```
 
 检查服务器架构：
 
