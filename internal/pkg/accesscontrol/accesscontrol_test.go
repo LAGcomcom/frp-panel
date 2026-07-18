@@ -14,7 +14,7 @@ func TestGroupServerAccessAndBandwidthOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Server{}, &model.UserGroup{}, &model.UserGroupServer{}, &model.Plan{}, &model.User{}); err != nil {
+	if err := db.AutoMigrate(&model.Server{}, &model.UserGroup{}, &model.UserGroupServer{}, &model.Plan{}, &model.User{}, &model.PlanEntitlement{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,7 +70,7 @@ func TestExpiredPlanEntitlementsAreRemovedOnEveryAccessPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Server{}, &model.UserGroup{}, &model.UserGroupServer{}, &model.Plan{}, &model.User{}); err != nil {
+	if err := db.AutoMigrate(&model.Server{}, &model.UserGroup{}, &model.UserGroupServer{}, &model.Plan{}, &model.User{}, &model.PlanEntitlement{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,5 +106,123 @@ func TestExpiredPlanEntitlementsAreRemovedOnEveryAccessPath(t *testing.T) {
 	}
 	if got := EffectiveBandwidth(db, loaded); got != defaultFreeBandwidth {
 		t.Fatalf("expired plan bandwidth = %d, want free bandwidth %d", got, defaultFreeBandwidth)
+	}
+}
+
+func TestQueuedPlansActivateInPurchaseOrder(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queued-plan-order?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.UserGroup{}, &model.Plan{}, &model.User{}, &model.PlanEntitlement{}); err != nil {
+		t.Fatal(err)
+	}
+	current := model.Plan{Name: "Current", DurationDays: 30}
+	firstGroup := model.UserGroup{Name: "First group"}
+	secondGroup := model.UserGroup{Name: "Second group"}
+	if err := db.Create(&firstGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&secondGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+	first := model.Plan{Name: "First queued", DurationDays: 10, GroupID: &firstGroup.ID}
+	second := model.Plan{Name: "Second queued", DurationDays: 20, GroupID: &secondGroup.ID}
+	for _, plan := range []*model.Plan{&current, &first, &second} {
+		if err := db.Create(plan).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	expiredAt := time.Now().Add(-time.Minute).Truncate(time.Second)
+	user := model.User{
+		Email: "queue-order@example.com", Password: "x", APIKey: "queue-order-key", InviteCode: "queue-order-invite", Status: "active",
+		PlanID: &current.ID, PlanExpiresAt: &expiredAt,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	queued := []model.PlanEntitlement{
+		{UserID: user.ID, PlanID: first.ID, OrderID: 101, DurationDays: 10, Status: model.PlanEntitlementQueued},
+		{UserID: user.ID, PlanID: second.ID, OrderID: 102, DurationDays: 20, Status: model.PlanEntitlementQueued},
+	}
+	if err := db.Create(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	firstStart := expiredAt.Add(time.Minute)
+	if err := ReconcilePlanEntitlements(db, firstStart); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Preload("Plan").Preload("Group").First(&user, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.PlanID == nil || *user.PlanID != first.ID || user.PlanExpiresAt == nil || !user.PlanExpiresAt.Equal(expiredAt.AddDate(0, 0, 10)) ||
+		user.GroupID == nil || *user.GroupID != firstGroup.ID || user.Group == nil || user.Group.ID != firstGroup.ID {
+		t.Fatalf("first queued plan not activated: %+v", user)
+	}
+	secondBoundary := *user.PlanExpiresAt
+	secondStart := secondBoundary.Add(time.Minute)
+	if err := ExpireUserPlan(db, &user, secondStart); err != nil {
+		t.Fatal(err)
+	}
+	if user.PlanID == nil || *user.PlanID != second.ID || user.PlanExpiresAt == nil || !user.PlanExpiresAt.Equal(secondBoundary.AddDate(0, 0, 20)) ||
+		user.GroupID == nil || *user.GroupID != secondGroup.ID || user.Group == nil || user.Group.ID != secondGroup.ID {
+		t.Fatalf("second queued plan not activated: %+v", user)
+	}
+	if err := db.First(&queued[0], queued[0].ID).Error; err != nil || queued[0].Status != model.PlanEntitlementExpired {
+		t.Fatalf("first entitlement status=%q err=%v", queued[0].Status, err)
+	}
+	if err := db.First(&queued[1], queued[1].ID).Error; err != nil || queued[1].Status != model.PlanEntitlementActive {
+		t.Fatalf("second entitlement status=%q err=%v", queued[1].Status, err)
+	}
+}
+
+func TestReconcileCatchesUpElapsedQueuedPeriods(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queued-plan-catchup?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Plan{}, &model.User{}, &model.PlanEntitlement{}); err != nil {
+		t.Fatal(err)
+	}
+	current := model.Plan{Name: "Expired current", DurationDays: 30}
+	elapsed := model.Plan{Name: "Elapsed queued", DurationDays: 10}
+	next := model.Plan{Name: "Current queued", DurationDays: 20}
+	for _, plan := range []*model.Plan{&current, &elapsed, &next} {
+		if err := db.Create(plan).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().Truncate(time.Second)
+	boundary := now.AddDate(0, 0, -15)
+	user := model.User{
+		Email: "queue-catchup@example.com", Password: "x", APIKey: "queue-catchup-key", InviteCode: "queue-catchup-invite", Status: "active",
+		PlanID: &current.ID, PlanExpiresAt: &boundary,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	items := []model.PlanEntitlement{
+		{UserID: user.ID, PlanID: elapsed.ID, OrderID: 201, DurationDays: 10, Status: model.PlanEntitlementQueued},
+		{UserID: user.ID, PlanID: next.ID, OrderID: 202, DurationDays: 20, Status: model.PlanEntitlementQueued},
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ReconcilePlanEntitlements(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := boundary.AddDate(0, 0, 30)
+	if user.PlanID == nil || *user.PlanID != next.ID || user.PlanExpiresAt == nil || !user.PlanExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("catch-up selected wrong entitlement: user=%+v want expiry=%v", user, wantExpiry)
+	}
+	if err := db.First(&items[0], items[0].ID).Error; err != nil || items[0].Status != model.PlanEntitlementExpired {
+		t.Fatalf("elapsed item status=%q err=%v", items[0].Status, err)
+	}
+	if err := db.First(&items[1], items[1].ID).Error; err != nil || items[1].Status != model.PlanEntitlementActive {
+		t.Fatalf("current item status=%q err=%v", items[1].Status, err)
 	}
 }

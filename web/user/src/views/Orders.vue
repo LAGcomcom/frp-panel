@@ -29,6 +29,16 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="权益状态" min-width="150">
+        <template #default="{ row }">
+          <span v-if="row.order_type === 'recharge'">-</span>
+          <el-tag v-else-if="row.entitlement" :type="entitlementType[row.entitlement.status] || 'info'" size="small">
+            {{ entitlementMap[row.entitlement.status] || row.entitlement.status }}
+          </el-tag>
+          <span v-else-if="row.pay_status === 'paid'">历史订单</span>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="170">
         <template #default="{ row }">{{ new Date(row.created_at).toLocaleString('zh-CN') }}</template>
       </el-table-column>
@@ -46,6 +56,12 @@ const loading = ref(false)
 const durationMap: Record<string, string> = { monthly: '月付', quarterly: '季付', yearly: '年付', recharge: '充值' }
 const methodMap: Record<string, string> = { balance: '余额', alipay: '支付宝', wechat: '微信', usdt: 'USDT', epay: '易支付', admin: '管理员' }
 const statusMap: Record<string, string> = { paid: '已支付', refunded: '已退款', pending: '待支付', expired: '已过期' }
+const entitlementMap: Record<string, string> = {
+  active: '已生效', extended: '已续期', queued: '排队中（按购买顺序）', expired: '已结束',
+}
+const entitlementType: Record<string, string> = {
+  active: 'success', extended: 'success', queued: 'warning', expired: 'info',
+}
 
 onMounted(async () => {
   loading.value = true

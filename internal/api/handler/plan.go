@@ -189,20 +189,16 @@ func (h *PlanHandler) validateGroup(groupID *uint) error {
 
 func (h *PlanHandler) DeletePlan(c *gin.Context) {
 	id := c.Param("id")
-
-	// Check if plan is in use
-	var count int64
-	h.db.Model(&model.User{}).Where("plan_id = ?", id).Count(&count)
-	if count > 0 {
-		response.BadRequest(c, "plan is in use by users")
+	result := h.db.Model(&model.Plan{}).Where("id = ?", id).Update("status", "archived")
+	if result.Error != nil {
+		response.InternalError(c, "failed to archive plan")
 		return
 	}
-
-	if err := h.db.Unscoped().Delete(&model.Plan{}, id).Error; err != nil {
-		response.InternalError(c, "failed to delete plan")
+	if result.RowsAffected != 1 {
+		response.NotFound(c, "plan not found")
 		return
 	}
-	response.SuccessWithMessage(c, "plan deleted", nil)
+	response.SuccessWithMessage(c, "plan archived", nil)
 }
 
 func (h *PlanHandler) TogglePlanStatus(c *gin.Context) {

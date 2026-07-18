@@ -49,6 +49,9 @@
         </el-radio-group>
       </div>
 
+      <el-alert v-if="purchaseNotice" :title="purchaseNotice" type="info" :closable="false" show-icon
+        style="margin-bottom: 16px" />
+
       <div class="order-section">
         <div class="order-section-label">优惠码</div>
         <div class="coupon-row">
@@ -165,6 +168,7 @@ const couponCode = ref('')
 const ordering = ref(false)
 const userBalance = ref(0)
 const currentPlanId = ref<number | null>(null)
+const currentPlanName = ref('')
 const verifying = ref(false)
 const couponVerified = ref(false)
 const couponError = ref('')
@@ -206,6 +210,13 @@ const selectedDurationDays = computed(() => {
   if (durationType.value === 'yearly') return baseDays * 12
   return baseDays
 })
+const purchaseNotice = computed(() => {
+  if (!currentPlanId.value || !selectedPlan.value) return ''
+  if (currentPlanId.value === selectedPlan.value.id) {
+    return `续费时长会叠加到当前 ${currentPlanName.value || '套餐'} 的到期时间之后。`
+  }
+  return `当前 ${currentPlanName.value || '套餐'} 和已经排队的套餐都不会被覆盖；新套餐将按购买顺序自动生效。`
+})
 
 // Re-verify coupon when duration type changes
 watch(durationType, () => {
@@ -219,6 +230,7 @@ onMounted(async () => {
   plans.value = plansRes.data
   userBalance.value = profileRes.data.balance || 0
   currentPlanId.value = profileRes.data.plan_id || null
+  currentPlanName.value = profileRes.data.plan?.name || ''
   paymentMethods.value = methodsRes.data || []
 })
 
@@ -283,11 +295,12 @@ async function handleOrder() {
     })
 
     if (payMethod.value === 'balance') {
-      ElMessage.success('购买成功！')
+      ElMessage.success(deliveryMessage(res.data?.entitlement?.status))
       showBuy.value = false
       const profileRes = await getProfile()
       userBalance.value = profileRes.data.balance || 0
       currentPlanId.value = profileRes.data.plan_id || null
+      currentPlanName.value = profileRes.data.plan?.name || ''
     } else {
       // External payment
       showBuy.value = false
@@ -341,10 +354,11 @@ async function checkPayStatus() {
     if (res.data.pay_status === 'paid') {
       stopPolling()
       showPayDialog.value = false
-      ElMessage.success('支付成功！')
+      ElMessage.success(deliveryMessage(res.data.entitlement?.status))
       const profileRes = await getProfile()
       userBalance.value = profileRes.data.balance || 0
       currentPlanId.value = profileRes.data.plan_id || null
+      currentPlanName.value = profileRes.data.plan?.name || ''
     } else if (res.data.pay_status === 'expired') {
       stopPolling()
       showPayDialog.value = false
@@ -370,6 +384,12 @@ function formatCountdown(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = seconds % 60
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
+
+function deliveryMessage(status?: string): string {
+  if (status === 'queued') return '购买成功，新套餐已排队，将在当前套餐到期后自动生效。'
+  if (status === 'extended') return '续费成功，有效期已叠加。'
+  return '购买成功，套餐已生效。'
 }
 
 function formatBytes(bytes: number): string {

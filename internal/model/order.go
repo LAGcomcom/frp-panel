@@ -16,8 +16,8 @@ type Order struct {
 	OriginalAmount float64        `gorm:"default:0" json:"original_amount"`
 	Discount       float64        `gorm:"default:0" json:"discount"`
 	CouponCode     string         `gorm:"size:64" json:"coupon_code"`
-	DurationType   string         `gorm:"size:20" json:"duration_type"`                   // monthly, quarterly, yearly, recharge
-	PayMethod      string         `gorm:"size:20" json:"pay_method"`                      // alipay, wechat, usdt, epay, balance, admin
+	DurationType   string         `gorm:"size:20" json:"duration_type"`                       // monthly, quarterly, yearly, recharge
+	PayMethod      string         `gorm:"size:20" json:"pay_method"`                          // alipay, wechat, usdt, epay, balance, admin
 	PayStatus      string         `gorm:"size:20;default:pending;not null" json:"pay_status"` // pending, paid, refunded, expired
 	TradeNo        string         `gorm:"size:255" json:"trade_no"`
 	PaidAt         *time.Time     `json:"paid_at"`
@@ -26,8 +26,9 @@ type Order struct {
 	UpdatedAt      time.Time      `json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
 
-	User User `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Plan Plan `gorm:"foreignKey:PlanID" json:"plan,omitempty"`
+	User        User             `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Plan        Plan             `gorm:"foreignKey:PlanID" json:"plan,omitempty"`
+	Entitlement *PlanEntitlement `gorm:"foreignKey:OrderID" json:"entitlement,omitempty"`
 }
 
 func (Order) TableName() string {

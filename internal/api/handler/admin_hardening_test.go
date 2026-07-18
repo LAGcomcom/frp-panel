@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
 	"github.com/gin-gonic/gin"
 	sqlite "github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -248,6 +251,229 @@ func TestPaymentConfirmationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDifferentPlanPurchaseQueuesUntilCurrentPlanExpires(t *testing.T) {
+	db := openAdminHardeningDB(t, "plan-purchase-queue")
+	highPlan := model.Plan{Name: "Premium 99", DurationDays: 30, Status: "active"}
+	lowPlan := model.Plan{Name: "Basic 9.9", DurationDays: 30, Status: "active"}
+	if err := db.Create(&highPlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&lowPlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	currentExpiry := time.Now().AddDate(0, 0, 30).Truncate(time.Second)
+	user := model.User{
+		Email: "queued-plan@example.com", Password: "x", InviteCode: "queued-plan", APIKey: "queued-plan-key",
+		Role: "user", Status: "active", PlanID: &highPlan.ID, PlanExpiresAt: &currentExpiry,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := model.Order{
+		UserID: user.ID, PlanID: lowPlan.ID, OrderNo: "queued-low-plan", OrderType: "plan",
+		Amount: 9.9, DurationType: "monthly", PayMethod: "alipay", PayStatus: "pending",
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewOrderHandler(db)
+	processed, err := handler.confirmOrderPayment(&order, user.ID, "queued-trade")
+	if err != nil || !processed {
+		t.Fatalf("confirm queued purchase: processed=%v err=%v", processed, err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.PlanID == nil || *user.PlanID != highPlan.ID || user.PlanExpiresAt == nil || !user.PlanExpiresAt.Equal(currentExpiry) {
+		t.Fatalf("later purchase overwrote current plan: user=%+v", user)
+	}
+	var entitlement model.PlanEntitlement
+	if err := db.Where("order_id = ?", order.ID).First(&entitlement).Error; err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Status != model.PlanEntitlementQueued || entitlement.StartsAt != nil || entitlement.ExpiresAt != nil {
+		t.Fatalf("different plan was not queued: %+v", entitlement)
+	}
+	processed, err = handler.confirmOrderPayment(&order, user.ID, "duplicate-trade")
+	if err != nil || processed {
+		t.Fatalf("duplicate queued confirmation: processed=%v err=%v", processed, err)
+	}
+	var entitlementCount int64
+	db.Model(&model.PlanEntitlement{}).Where("order_id = ?", order.ID).Count(&entitlementCount)
+	if entitlementCount != 1 {
+		t.Fatalf("duplicate callback created %d entitlements", entitlementCount)
+	}
+
+	transitionAt := currentExpiry.Add(time.Minute)
+	if err := accesscontrol.ExpireUserPlan(db, &user, transitionAt); err != nil {
+		t.Fatal(err)
+	}
+	if user.PlanID == nil || *user.PlanID != lowPlan.ID || user.PlanExpiresAt == nil {
+		t.Fatalf("queued plan did not activate: %+v", user)
+	}
+	wantExpiry := currentExpiry.AddDate(0, 0, 30)
+	if !user.PlanExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("queued expiry=%v want=%v", user.PlanExpiresAt, wantExpiry)
+	}
+	if err := db.First(&entitlement, entitlement.ID).Error; err != nil || entitlement.Status != model.PlanEntitlementActive {
+		t.Fatalf("activated entitlement=%+v err=%v", entitlement, err)
+	}
+}
+
+func TestSamePlanPurchaseExtendsCurrentExpiry(t *testing.T) {
+	db := openAdminHardeningDB(t, "same-plan-extension")
+	plan := model.Plan{Name: "Premium", DurationDays: 30, Status: "active"}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	currentExpiry := time.Now().AddDate(0, 0, 10).Truncate(time.Second)
+	user := model.User{
+		Email: "extend-plan@example.com", Password: "x", InviteCode: "extend-plan", APIKey: "extend-plan-key",
+		Role: "user", Status: "active", PlanID: &plan.ID, PlanExpiresAt: &currentExpiry,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := model.Order{
+		UserID: user.ID, PlanID: plan.ID, OrderNo: "extend-current-plan", OrderType: "plan",
+		Amount: 99, DurationType: "monthly", PayMethod: "alipay", PayStatus: "pending",
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	processed, err := NewOrderHandler(db).confirmOrderPayment(&order, user.ID, "extend-trade")
+	if err != nil || !processed {
+		t.Fatalf("confirm extension: processed=%v err=%v", processed, err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := currentExpiry.AddDate(0, 0, 30)
+	if user.PlanID == nil || *user.PlanID != plan.ID || user.PlanExpiresAt == nil || !user.PlanExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("same plan was not extended: user=%+v want expiry=%v", user, wantExpiry)
+	}
+	var entitlement model.PlanEntitlement
+	if err := db.Where("order_id = ?", order.ID).First(&entitlement).Error; err != nil || entitlement.Status != model.PlanEntitlementExtended {
+		t.Fatalf("extension entitlement=%+v err=%v", entitlement, err)
+	}
+}
+
+func TestConcurrentSamePlanPaymentsBothExtendExpiry(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "concurrent-plan.db") + "?_pragma=busy_timeout%285000%29&_txlock=immediate"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.UserGroup{}, &model.Plan{}, &model.User{}, &model.Order{}, &model.PlanEntitlement{}, &model.Setting{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	sqlDB.SetMaxOpenConns(4)
+	plan := model.Plan{Name: "Concurrent", DurationDays: 30, Status: "active"}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	currentExpiry := time.Now().AddDate(0, 0, 10).Truncate(time.Second)
+	user := model.User{
+		Email: "concurrent-plan@example.com", Password: "x", InviteCode: "concurrent-plan", APIKey: "concurrent-plan-key",
+		Role: "user", Status: "active", PlanID: &plan.ID, PlanExpiresAt: &currentExpiry,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	orders := []model.Order{
+		{UserID: user.ID, PlanID: plan.ID, OrderNo: "concurrent-plan-1", OrderType: "plan", Amount: 99, DurationType: "monthly", PayMethod: "alipay", PayStatus: "pending"},
+		{UserID: user.ID, PlanID: plan.ID, OrderNo: "concurrent-plan-2", OrderType: "plan", Amount: 99, DurationType: "monthly", PayMethod: "alipay", PayStatus: "pending"},
+	}
+	if err := db.Create(&orders).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		processed bool
+		err       error
+	}
+	results := make(chan result, len(orders))
+	var wg sync.WaitGroup
+	for index := range orders {
+		wg.Add(1)
+		go func(order model.Order) {
+			defer wg.Done()
+			processed, err := NewOrderHandler(db).confirmOrderPayment(&order, user.ID, "trade-"+order.OrderNo)
+			results <- result{processed: processed, err: err}
+		}(orders[index])
+	}
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.err != nil || !result.processed {
+			t.Fatalf("concurrent confirmation failed: processed=%v err=%v", result.processed, result.err)
+		}
+	}
+	if err := db.First(&user, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantExpiry := currentExpiry.AddDate(0, 0, 60)
+	if user.PlanExpiresAt == nil || !user.PlanExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("concurrent extensions lost time: expiry=%v want=%v", user.PlanExpiresAt, wantExpiry)
+	}
+	var count int64
+	db.Model(&model.PlanEntitlement{}).Where("user_id = ?", user.ID).Count(&count)
+	if count != 2 {
+		t.Fatalf("concurrent payments created %d entitlements", count)
+	}
+}
+
+func TestArchivingPlanPreservesPendingPurchaseFulfillment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "archive-pending-plan")
+	plan := model.Plan{Name: "Pending purchase", DurationDays: 30, Status: "active"}
+	user := model.User{Email: "pending-plan@example.com", Password: "x", InviteCode: "pending-plan", APIKey: "pending-plan-key", Role: "user", Status: "active"}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := model.Order{
+		UserID: user.ID, PlanID: plan.ID, OrderNo: "pending-before-archive", OrderType: "plan",
+		Amount: 9.9, DurationType: "monthly", PayMethod: "alipay", PayStatus: "pending",
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.DELETE("/plans/:id", NewPlanHandler(db).DeletePlan)
+	archived := performJSONRequest(router, http.MethodDelete, "/plans/"+fmt.Sprint(plan.ID), nil)
+	if archived.Code != http.StatusOK {
+		t.Fatalf("archive status=%d body=%s", archived.Code, archived.Body.String())
+	}
+	if err := db.First(&plan, plan.ID).Error; err != nil || plan.Status != "archived" {
+		t.Fatalf("plan was hard-deleted or not archived: status=%q err=%v", plan.Status, err)
+	}
+	processed, err := NewOrderHandler(db).confirmOrderPayment(&order, user.ID, "paid-after-archive")
+	if err != nil || !processed {
+		t.Fatalf("archived pending purchase was not delivered: processed=%v err=%v", processed, err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil || user.PlanID == nil || *user.PlanID != plan.ID {
+		t.Fatalf("archived plan entitlement missing: user=%+v err=%v", user, err)
+	}
+
+	createRouter := gin.New()
+	createRouter.Use(func(c *gin.Context) { c.Set("user_id", user.ID); c.Next() })
+	createRouter.POST("/orders", NewOrderHandler(db).CreateOrder)
+	rejected := performJSONRequest(createRouter, http.MethodPost, "/orders", []byte(fmt.Sprintf(
+		`{"plan_id":%d,"duration_type":"monthly","pay_method":"balance"}`, plan.ID)))
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("new archived-plan order status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+}
+
 func TestMissingInviterDoesNotBlockPaymentConfirmation(t *testing.T) {
 	db := openAdminHardeningDB(t, "payment-missing-inviter")
 	inviter := model.User{Email: "deleted-inviter@example.com", Password: "x", InviteCode: "deleted-inviter", APIKey: "deleted-inviter-key", Role: "user", Status: "active"}
@@ -450,7 +676,7 @@ func openAdminHardeningDB(t *testing.T, name string) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&model.UserGroup{}, &model.Plan{}, &model.User{}, &model.Server{}, &model.Proxy{},
-		&model.Order{}, &model.TrafficDaily{}, &model.Setting{},
+		&model.Order{}, &model.PlanEntitlement{}, &model.TrafficDaily{}, &model.Setting{},
 	); err != nil {
 		t.Fatal(err)
 	}

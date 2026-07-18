@@ -8,6 +8,7 @@ import (
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
 	"github.com/frp-panel/frp-panel/internal/service/billing"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -48,7 +49,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	var plan model.Plan
-	if err := h.db.First(&plan, req.PlanID).Error; err != nil {
+	if err := h.db.Where("id = ? AND status = ?", req.PlanID, "active").First(&plan).Error; err != nil {
 		response.BadRequest(c, "plan not found")
 		return
 	}
@@ -177,6 +178,10 @@ func (h *OrderHandler) processBalancePayment(c *gin.Context, order *model.Order,
 		return
 	}
 	order.PayStatus = "paid"
+	if err := h.db.Preload("Entitlement").First(order, order.ID).Error; err != nil {
+		response.InternalError(c, "failed to load paid order")
+		return
+	}
 	response.SuccessWithMessage(c, "order paid", order)
 }
 
@@ -278,7 +283,7 @@ func (h *OrderHandler) confirmOrderPaymentTx(tx *gorm.DB, order *model.Order, us
 
 	// Assign plan (only for plan orders)
 	if order.OrderType == "plan" && order.PlanID > 0 {
-		if err := h.assignPlan(tx, userID, order.PlanID, order.DurationType, order.ExpiresAt); err != nil {
+		if err := h.assignPlan(tx, userID, order.ID, order.PlanID, order.DurationType); err != nil {
 			return false, err
 		}
 	}
@@ -360,7 +365,7 @@ func (h *OrderHandler) processReferralRebate(tx *gorm.DB, order *model.Order, us
 	}).Error
 }
 
-func (h *OrderHandler) assignPlan(tx *gorm.DB, userID uint, planID uint, durationType string, expiresAt *time.Time) error {
+func (h *OrderHandler) assignPlan(tx *gorm.DB, userID, orderID, planID uint, durationType string) error {
 	var plan model.Plan
 	if err := tx.First(&plan, planID).Error; err != nil {
 		return err
@@ -370,32 +375,8 @@ func (h *OrderHandler) assignPlan(tx *gorm.DB, userID uint, planID uint, duratio
 		return fmt.Errorf("invalid plan duration")
 	}
 
-	var existingUser model.User
-	if err := tx.First(&existingUser, userID).Error; err != nil {
-		return err
-	}
-	var newExpiresAt time.Time
-	if existingUser.PlanID != nil && *existingUser.PlanID == planID &&
-		existingUser.PlanExpiresAt != nil && existingUser.PlanExpiresAt.After(time.Now().In(beijingTZ)) {
-		newExpiresAt = existingUser.PlanExpiresAt.AddDate(0, 0, days)
-	} else if expiresAt != nil {
-		newExpiresAt = *expiresAt
-	} else {
-		newExpiresAt = time.Now().In(beijingTZ).AddDate(0, 0, days)
-	}
-
-	updates := map[string]interface{}{
-		"plan_id":         planID,
-		"plan_expires_at": newExpiresAt,
-	}
-	if plan.GroupID != nil {
-		updates["group_id"] = *plan.GroupID
-		updates["group_source"] = "plan"
-	} else if existingUser.GroupSource == "plan" || existingUser.GroupSource == "expired_plan" {
-		updates["group_id"] = nil
-		updates["group_source"] = ""
-	}
-	return tx.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error
+	_, err := accesscontrol.GrantPurchasedPlan(tx, userID, orderID, planID, days, time.Now().In(beijingTZ))
+	return err
 }
 
 func planDurationDays(plan *model.Plan, durationType string) int {
@@ -476,7 +457,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	query.Count(&total)
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("Plan").Find(&orders)
+	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("Plan").Preload("Entitlement").Find(&orders)
 
 	response.Page(c, orders, total, parseInt(page), parseInt(size))
 }
@@ -486,7 +467,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	orderID := c.Param("id")
 
 	var order model.Order
-	if err := h.db.Where("id = ? AND user_id = ?", orderID, userID).Preload("Plan").First(&order).Error; err != nil {
+	if err := h.db.Where("id = ? AND user_id = ?", orderID, userID).Preload("Plan").Preload("Entitlement").First(&order).Error; err != nil {
 		response.NotFound(c, "order not found")
 		return
 	}
@@ -515,7 +496,7 @@ func (h *OrderHandler) AdminListOrders(c *gin.Context) {
 	query.Count(&total)
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("User").Preload("Plan").Find(&orders)
+	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("User").Preload("Plan").Preload("Entitlement").Find(&orders)
 
 	response.Page(c, orders, total, parseInt(page), parseInt(size))
 }

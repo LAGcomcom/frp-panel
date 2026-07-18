@@ -60,7 +60,7 @@
           <div class="action-btns">
             <el-button size="small" @click="handleEdit(row)">编辑</el-button>
             <el-button size="small" @click="handleToggleStatus(row)">{{ row.status === 'active' ? '下架' : '上架' }}</el-button>
-            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button size="small" type="warning" @click="handleDelete(row)">归档</el-button>
           </div>
         </template>
       </el-table-column>
@@ -166,7 +166,7 @@
 import { ref, onMounted, reactive } from 'vue'
 import { getPlans, getUserGroups, createPlan, updatePlan, togglePlanStatus, deletePlan } from '../../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete } from '@element-plus/icons-vue'
+import { Edit } from '@element-plus/icons-vue'
 
 const plans = ref<any[]>([])
 const loading = ref(false)
@@ -256,9 +256,13 @@ async function handleToggleStatus(row: any) {
 }
 
 async function handleDelete(row: any) {
-  await ElMessageBox.confirm(`确认删除套餐"${row.name}"？此操作不可恢复。`, '确认删除', { type: 'warning' })
+  await ElMessageBox.confirm(
+    `确认归档套餐"${row.name}"？归档后新用户无法购买，已有订单和权益不受影响，之后仍可重新上架。`,
+    '确认归档',
+    { type: 'warning' },
+  )
   await deletePlan(row.id)
-  ElMessage.success('套餐已删除')
+  ElMessage.success('套餐已归档')
   fetchData()
 }
 

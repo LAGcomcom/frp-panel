@@ -33,8 +33,187 @@ func LoadUserByAPIKey(db *gorm.DB, apiKey string) (*model.User, error) {
 }
 
 func ExpireUserPlan(db *gorm.DB, user *model.User, now time.Time) error {
-	if user.PlanID == nil || user.PlanExpiresAt == nil || user.PlanExpiresAt.After(now) {
+	if user == nil || user.PlanID == nil || user.PlanExpiresAt == nil || user.PlanExpiresAt.After(now) {
 		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var current model.User
+		if err := tx.First(&current, user.ID).Error; err != nil {
+			return err
+		}
+		if err := reconcileUserPlanTx(tx, &current, now); err != nil {
+			return err
+		}
+		*user = current
+		if current.PlanID != nil {
+			var plan model.Plan
+			if err := tx.First(&plan, *current.PlanID).Error; err != nil {
+				return err
+			}
+			user.Plan = &plan
+		}
+		if current.GroupID != nil {
+			var group model.UserGroup
+			if err := tx.First(&group, *current.GroupID).Error; err != nil {
+				return err
+			}
+			user.Group = &group
+		}
+		return nil
+	})
+}
+
+// GrantPurchasedPlan delivers one paid plan order. Matching plans extend the
+// current period; a different plan is queued until the active period expires.
+func GrantPurchasedPlan(tx *gorm.DB, userID, orderID, planID uint, durationDays int, now time.Time) (string, error) {
+	if durationDays <= 0 {
+		return "", fmt.Errorf("invalid plan duration")
+	}
+	var plan model.Plan
+	if err := tx.First(&plan, planID).Error; err != nil {
+		return "", err
+	}
+	var user model.User
+	if err := tx.First(&user, userID).Error; err != nil {
+		return "", err
+	}
+	if user.PlanID != nil && user.PlanExpiresAt != nil && !user.PlanExpiresAt.After(now) {
+		if err := reconcileUserPlanTx(tx, &user, now); err != nil {
+			return "", err
+		}
+	}
+
+	entitlement := model.PlanEntitlement{
+		UserID:       userID,
+		PlanID:       planID,
+		OrderID:      orderID,
+		DurationDays: durationDays,
+	}
+	active := user.PlanID != nil && user.PlanExpiresAt != nil && user.PlanExpiresAt.After(now)
+	if active && *user.PlanID != planID {
+		entitlement.Status = model.PlanEntitlementQueued
+		if err := tx.Create(&entitlement).Error; err != nil {
+			return "", err
+		}
+		return entitlement.Status, nil
+	}
+
+	startsAt := now
+	status := model.PlanEntitlementActive
+	if active {
+		startsAt = *user.PlanExpiresAt
+		status = model.PlanEntitlementExtended
+	}
+	expiresAt := startsAt.AddDate(0, 0, durationDays)
+	entitlement.Status = status
+	entitlement.StartsAt = &startsAt
+	entitlement.ExpiresAt = &expiresAt
+	entitlement.ActivatedAt = &now
+	if err := tx.Create(&entitlement).Error; err != nil {
+		return "", err
+	}
+	if err := applyPlanToUser(tx, &user, &plan, expiresAt); err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
+// ReconcilePlanEntitlements activates queued plans for expired or empty users.
+func ReconcilePlanEntitlements(db *gorm.DB, now time.Time) error {
+	if err := db.Model(&model.PlanEntitlement{}).
+		Where("status IN ? AND expires_at IS NOT NULL AND expires_at <= ?",
+			[]string{model.PlanEntitlementActive, model.PlanEntitlementExtended}, now).
+		Update("status", model.PlanEntitlementExpired).Error; err != nil {
+		return err
+	}
+	userIDs := make(map[uint]struct{})
+	var expiredIDs []uint
+	if err := db.Model(&model.User{}).
+		Where("plan_id IS NOT NULL AND plan_expires_at IS NOT NULL AND plan_expires_at <= ?", now).
+		Pluck("id", &expiredIDs).Error; err != nil {
+		return err
+	}
+	for _, id := range expiredIDs {
+		userIDs[id] = struct{}{}
+	}
+	var queuedIDs []uint
+	if err := db.Table("plan_entitlements AS pe").
+		Joins("JOIN users AS u ON u.id = pe.user_id AND u.deleted_at IS NULL").
+		Where("pe.status = ? AND (u.plan_id IS NULL OR u.plan_expires_at IS NULL OR u.plan_expires_at <= ?)",
+			model.PlanEntitlementQueued, now).
+		Distinct("pe.user_id").Pluck("pe.user_id", &queuedIDs).Error; err != nil {
+		return err
+	}
+	for _, id := range queuedIDs {
+		userIDs[id] = struct{}{}
+	}
+	for id := range userIDs {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			var user model.User
+			if err := tx.First(&user, id).Error; err != nil {
+				return err
+			}
+			return reconcileUserPlanTx(tx, &user, now)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reconcileUserPlanTx(tx *gorm.DB, user *model.User, now time.Time) error {
+	if user.PlanID != nil && user.PlanExpiresAt != nil && user.PlanExpiresAt.After(now) {
+		return nil
+	}
+	if err := tx.Model(&model.PlanEntitlement{}).
+		Where("user_id = ? AND status IN ? AND expires_at IS NOT NULL AND expires_at <= ?", user.ID,
+			[]string{model.PlanEntitlementActive, model.PlanEntitlementExtended}, now).
+		Update("status", model.PlanEntitlementExpired).Error; err != nil {
+		return err
+	}
+
+	startsAt := now
+	if user.PlanExpiresAt != nil {
+		startsAt = *user.PlanExpiresAt
+	}
+	for {
+		var next model.PlanEntitlement
+		err := tx.Where("user_id = ? AND status = ?", user.ID, model.PlanEntitlementQueued).
+			Order("id ASC").First(&next).Error
+		if err == gorm.ErrRecordNotFound {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		expiresAt := startsAt.AddDate(0, 0, next.DurationDays)
+		status := model.PlanEntitlementActive
+		if !expiresAt.After(now) {
+			status = model.PlanEntitlementExpired
+		}
+		claim := tx.Model(&model.PlanEntitlement{}).
+			Where("id = ? AND status = ?", next.ID, model.PlanEntitlementQueued).
+			Updates(map[string]interface{}{
+				"status":       status,
+				"starts_at":    startsAt,
+				"expires_at":   expiresAt,
+				"activated_at": now,
+			})
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return nil
+		}
+		if status == model.PlanEntitlementExpired {
+			startsAt = expiresAt
+			continue
+		}
+		var plan model.Plan
+		if err := tx.First(&plan, next.PlanID).Error; err != nil {
+			return err
+		}
+		return applyPlanToUser(tx, user, &plan, expiresAt)
 	}
 
 	updates := map[string]interface{}{
@@ -45,7 +224,7 @@ func ExpireUserPlan(db *gorm.DB, user *model.User, now time.Time) error {
 		updates["group_id"] = nil
 		updates["group_source"] = "expired_plan"
 	}
-	if err := db.Model(&model.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+	if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
 		return err
 	}
 
@@ -56,6 +235,34 @@ func ExpireUserPlan(db *gorm.DB, user *model.User, now time.Time) error {
 		user.GroupID = nil
 		user.GroupSource = "expired_plan"
 		user.Group = nil
+	}
+	return nil
+}
+
+func applyPlanToUser(tx *gorm.DB, user *model.User, plan *model.Plan, expiresAt time.Time) error {
+	updates := map[string]interface{}{
+		"plan_id":         plan.ID,
+		"plan_expires_at": expiresAt,
+	}
+	if plan.GroupID != nil {
+		updates["group_id"] = *plan.GroupID
+		updates["group_source"] = "plan"
+	} else if user.GroupSource == "plan" || user.GroupSource == "expired_plan" {
+		updates["group_id"] = nil
+		updates["group_source"] = ""
+	}
+	if err := tx.Model(&model.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+		return err
+	}
+	user.PlanID = &plan.ID
+	user.PlanExpiresAt = &expiresAt
+	user.Plan = plan
+	if plan.GroupID != nil {
+		user.GroupID = plan.GroupID
+		user.GroupSource = "plan"
+	} else if user.GroupSource == "plan" || user.GroupSource == "expired_plan" {
+		user.GroupID = nil
+		user.GroupSource = ""
 	}
 	return nil
 }

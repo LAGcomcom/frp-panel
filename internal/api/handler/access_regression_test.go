@@ -357,7 +357,7 @@ func openAccessRegressionDB(t *testing.T, name string) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Server{}, &model.UserGroup{}, &model.UserGroupServer{}, &model.Plan{}, &model.User{}, &model.Proxy{}, &model.Setting{}); err != nil {
+	if err := db.AutoMigrate(&model.Server{}, &model.UserGroup{}, &model.UserGroupServer{}, &model.Plan{}, &model.User{}, &model.PlanEntitlement{}, &model.Proxy{}, &model.Setting{}); err != nil {
 		t.Fatal(err)
 	}
 	return db

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,7 +39,7 @@ func main() {
 
 	switch cfg.Database.Driver {
 	case "sqlite":
-		db, err = gorm.Open(sqlite.Open(cfg.Database.DSN), &gorm.Config{
+		db, err = gorm.Open(sqlite.Open(sqliteDSN(cfg.Database.DSN)), &gorm.Config{
 			Logger: logger.New(log.New(os.Stdout, "", log.LstdFlags), logger.Config{
 				SlowThreshold:             200 * time.Millisecond,
 				LogLevel:                  logger.Warn,
@@ -63,6 +64,7 @@ func main() {
 		&model.Proxy{},
 		&model.Plan{},
 		&model.Order{},
+		&model.PlanEntitlement{},
 		&model.TrafficLog{},
 		&model.TrafficDaily{},
 		&model.ServerMetricsHistory{},
@@ -109,6 +111,7 @@ func main() {
 	alertManager.StartPeriodicChecks()
 	monitor.StartCouponRefundJob(db)
 	monitor.StartOrderExpireJob(db)
+	monitor.StartPlanTransitionJob(db)
 
 	// Setup router
 	updateClient := updateservice.NewClient(cfg.Update, cfg.Update.InstanceID)
@@ -135,6 +138,21 @@ func main() {
 	if err := r.Run(addr); err != nil {
 		log.Fatalf("failed to start server: %v", err)
 	}
+}
+
+func sqliteDSN(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	if !strings.Contains(dsn, "_pragma=busy_timeout") {
+		dsn += separator + "_pragma=busy_timeout%285000%29"
+		separator = "&"
+	}
+	if !strings.Contains(dsn, "_txlock=") {
+		dsn += separator + "_txlock=immediate"
+	}
+	return dsn
 }
 
 func seedAdmin(db *gorm.DB, cfg *config.Config) {
