@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -932,21 +933,10 @@ func (h *ServerHandler) InstallAgent(c *gin.Context) {
 		return
 	}
 
-	panelAddr := h.deployer.GetPluginWebhookURL()
-	if panelAddr == "" {
-		response.InternalError(c, "panel URL not configured")
+	panelAddr, err := agentPanelAddress(c.Request, h.deployer.GetPluginWebhookURL())
+	if err != nil {
+		response.BadRequest(c, err.Error())
 		return
-	}
-
-	// Extract panel host:port
-	panelFullAddr := strings.TrimPrefix(panelAddr, "http://")
-	panelFullAddr = strings.TrimPrefix(panelFullAddr, "https://")
-	if idx := strings.Index(panelFullAddr, "/"); idx > 0 {
-		panelFullAddr = panelFullAddr[:idx]
-	}
-	// Ensure port is present
-	if !strings.Contains(panelFullAddr, ":") {
-		panelFullAddr += fmt.Sprintf(":%d", h.deployer.GetPanelPort())
 	}
 
 	// Generate API key for agent
@@ -954,7 +944,7 @@ func (h *ServerHandler) InstallAgent(c *gin.Context) {
 
 	// Install agent async to avoid frontend timeout
 	go func() {
-		if err := h.deployer.InstallAgent(&server, panelFullAddr, apiKey); err != nil {
+		if err := h.deployer.InstallAgent(&server, panelAddr, apiKey); err != nil {
 			log.Printf("[InstallAgent] Failed for server %s: %v", server.Name, err)
 			h.db.Model(&server).Updates(map[string]interface{}{
 				"agent_installed": false,
@@ -967,4 +957,46 @@ func (h *ServerHandler) InstallAgent(c *gin.Context) {
 	}()
 
 	response.SuccessWithMessage(c, "agent installation started", gin.H{"api_key": apiKey})
+}
+
+func agentPanelAddress(r *http.Request, configured string) (string, error) {
+	candidate := strings.TrimSpace(configured)
+	if candidate == "" {
+		host := strings.TrimSpace(r.Host)
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		if requestFromLocalProxy(r) {
+			if forwardedHost := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); forwardedHost != "" {
+				host = forwardedHost
+			}
+			if forwardedProto := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])); forwardedProto == "http" || forwardedProto == "https" {
+				scheme = forwardedProto
+			}
+		}
+		if host == "" {
+			return "", fmt.Errorf("panel address is unavailable")
+		}
+		candidate = scheme + "://" + host
+	}
+
+	parsed, err := url.Parse(candidate)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		return "", fmt.Errorf("invalid panel address")
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func requestFromLocalProxy(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
 }
