@@ -70,7 +70,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 // GetPublicSettings returns settings safe for unauthenticated access
 func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
-	keys := []string{"registration_enabled", "login_enabled", "site_announcement", "email_verification_enabled", "site_title"}
+	keys := []string{"registration_enabled", "login_enabled", "site_announcement", "email_verification_enabled", "site_title", "invite_rebate_enabled"}
 	var settings []model.Setting
 	h.db.Where("key IN ?", keys).Find(&settings)
 
@@ -85,6 +85,9 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 	}
 	if result["login_enabled"] == "" {
 		result["login_enabled"] = "true"
+	}
+	if result["invite_rebate_enabled"] == "" {
+		result["invite_rebate_enabled"] = "true"
 	}
 
 	response.Success(c, result)

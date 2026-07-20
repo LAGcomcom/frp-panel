@@ -34,7 +34,7 @@
 
         <span v-if="!isCollapsed" class="nav-group-label">账户</span>
         <router-link
-          v-for="item in menuItems.slice(5)"
+          v-for="item in accountMenuItems"
           :key="item.path"
           :to="item.path"
           class="nav-item"
@@ -105,6 +105,7 @@ const router = useRouter()
 const isCollapsed = ref(false)
 const unreadCount = ref(0)
 const siteTitle = ref('FRP Panel')
+const inviteRebateEnabled = ref(true)
 let ws: WebSocket | null = null
 
 const userEmail = computed(() => {
@@ -153,6 +154,10 @@ onMounted(async () => {
   try {
     const res = await getPublicSettings()
     if (res.data?.site_title) siteTitle.value = res.data.site_title
+    inviteRebateEnabled.value = res.data?.invite_rebate_enabled !== 'false'
+    if (!inviteRebateEnabled.value && route.path === '/invite') {
+      router.replace('/home')
+    }
   } catch {}
 })
 
@@ -172,6 +177,10 @@ const menuItems = [
   { path: '/invite', title: '邀请好友', icon: 'Share' },
   { path: '/profile', title: '个人设置', icon: 'Setting' },
 ]
+
+const accountMenuItems = computed(() =>
+  menuItems.slice(5).filter(item => item.path !== '/invite' || inviteRebateEnabled.value)
+)
 
 function isActive(path: string) {
   return route.path === path || route.path.startsWith(path + '/')

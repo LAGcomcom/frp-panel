@@ -313,6 +313,9 @@ func (h *OrderHandler) processReferralRebate(tx *gorm.DB, order *model.Order, us
 
 	level1ID := *referredUser.InvitedBy
 	settings := h.getSettingsMap(tx)
+	if !settingBool(settings, "invite_rebate_enabled", true) {
+		return nil
+	}
 	level1Pct := 10.0
 	level2Pct := 5.0
 	if v := settings["invite_rebate_level1_percent"]; v != "" {

@@ -24,7 +24,7 @@
         <el-form-item label="登录密码" prop="password">
           <el-input v-model="form.password" type="password" show-password placeholder="至少 6 个字符" prefix-icon="Lock" />
         </el-form-item>
-        <el-form-item label="邀请码（选填）">
+        <el-form-item v-if="inviteRebateEnabled" label="邀请码（选填）">
           <el-input v-model="form.invite_code" placeholder="输入邀请码" prefix-icon="Ticket" />
         </el-form-item>
         <el-form-item>
@@ -53,6 +53,7 @@ const loading = ref(false)
 const sendingCode = ref(false)
 const formRef = ref<FormInstance>()
 const needCode = ref(false)
+const inviteRebateEnabled = ref(true)
 const codeCooldown = ref(0)
 const form = reactive({ email: '', password: '', invite_code: '', code: '' })
 
@@ -65,6 +66,7 @@ onMounted(async () => {
   try {
     const res = await getPublicSettings()
     needCode.value = res.data?.email_verification_enabled === 'true'
+    inviteRebateEnabled.value = res.data?.invite_rebate_enabled !== 'false'
   } catch {}
 })
 
@@ -94,7 +96,8 @@ async function handleRegister() {
   if (!valid) return
   loading.value = true
   try {
-    const res = await register(form)
+    const payload = inviteRebateEnabled.value ? form : { ...form, invite_code: '' }
+    const res = await register(payload)
     localStorage.setItem('user_token', res.data.token)
     ElMessage.success('注册成功')
     router.push('/home')

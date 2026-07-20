@@ -383,6 +383,11 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 // GetInviteStats returns invite statistics for the current user (level 1 + level 2)
 func (h *UserHandler) GetInviteStats(c *gin.Context) {
 	userID := c.MustGet("user_id").(uint)
+	settings := h.getSettingsMap()
+	if !settingBool(settings, "invite_rebate_enabled", true) {
+		response.Forbidden(c, "邀请返利已关闭")
+		return
+	}
 
 	var user model.User
 	h.db.First(&user, userID)
@@ -428,7 +433,6 @@ func (h *UserHandler) GetInviteStats(c *gin.Context) {
 	}
 
 	// Read rebate percentages from settings
-	settings := h.getSettingsMap()
 	level1Pct := 10.0
 	level2Pct := 5.0
 	if v := settings["invite_rebate_level1_percent"]; v != "" {

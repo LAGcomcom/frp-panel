@@ -501,6 +501,80 @@ func TestMissingInviterDoesNotBlockPaymentConfirmation(t *testing.T) {
 	}
 }
 
+func TestInviteRebateCanBeDisabled(t *testing.T) {
+	db := openAdminHardeningDB(t, "invite-rebate-disabled")
+	inviter := model.User{Email: "inviter@example.com", Password: "x", InviteCode: "inviter", APIKey: "inviter-key", Role: "user", Status: "active"}
+	if err := db.Create(&inviter).Error; err != nil {
+		t.Fatal(err)
+	}
+	user := model.User{Email: "invited-rebate@example.com", Password: "x", InviteCode: "invited-rebate", APIKey: "invited-rebate-key", Role: "user", Status: "active", InvitedBy: &inviter.ID}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Setting{Key: "invite_rebate_enabled", Value: "false"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := model.Order{UserID: user.ID, OrderNo: "rebate-disabled-order", OrderType: "recharge", Amount: 30, OriginalAmount: 30, DurationType: "recharge", PayMethod: "alipay", PayStatus: "pending"}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	processed, err := NewOrderHandler(db).confirmOrderPayment(&order, user.ID, "rebate-disabled-trade")
+	if err != nil || !processed {
+		t.Fatalf("confirmation with disabled rebate: processed=%v err=%v", processed, err)
+	}
+	if err := db.First(&inviter, inviter.ID).Error; err != nil || inviter.Balance != 0 {
+		t.Fatalf("disabled rebate credited inviter: balance=%v err=%v", inviter.Balance, err)
+	}
+	var rebateCount int64
+	db.Model(&model.ReferralRebate{}).Where("order_id = ?", order.ID).Count(&rebateCount)
+	if rebateCount != 0 {
+		t.Fatalf("disabled rebate created %d records", rebateCount)
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("user_id", inviter.ID)
+		c.Next()
+	})
+	router.GET("/invite-stats", NewUserHandler(db, nil).GetInviteStats)
+	recorder := performJSONRequest(router, http.MethodGet, "/invite-stats", nil)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("disabled invite stats status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPublicSettingsExposeInviteRebateDefaultAndOverride(t *testing.T) {
+	db := openAdminHardeningDB(t, "public-invite-rebate-setting")
+	router := gin.New()
+	router.GET("/settings/public", NewSettingHandler(db).GetPublicSettings)
+
+	recorder := performJSONRequest(router, http.MethodGet, "/settings/public", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("public settings status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data["invite_rebate_enabled"] != "true" {
+		t.Fatalf("default invite rebate setting=%q", payload.Data["invite_rebate_enabled"])
+	}
+
+	if err := db.Create(&model.Setting{Key: "invite_rebate_enabled", Value: "false"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	recorder = performJSONRequest(router, http.MethodGet, "/settings/public", nil)
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data["invite_rebate_enabled"] != "false" {
+		t.Fatalf("overridden invite rebate setting=%q", payload.Data["invite_rebate_enabled"])
+	}
+}
+
 func TestBalancePaymentCannotOverdraw(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openAdminHardeningDB(t, "balance-no-overdraw")
@@ -676,7 +750,7 @@ func openAdminHardeningDB(t *testing.T, name string) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&model.UserGroup{}, &model.Plan{}, &model.User{}, &model.Server{}, &model.Proxy{},
-		&model.Order{}, &model.PlanEntitlement{}, &model.TrafficDaily{}, &model.Setting{},
+		&model.Order{}, &model.PlanEntitlement{}, &model.ReferralRebate{}, &model.TrafficDaily{}, &model.Setting{},
 	); err != nil {
 		t.Fatal(err)
 	}

@@ -123,6 +123,10 @@
       </template>
 
       <el-form label-width="120px" class="settings-form">
+        <el-form-item label="启用返利">
+          <el-switch v-model="form.invite_rebate_enabled" active-value="true" inactive-value="false" />
+          <span class="form-hint">关闭后用户端隐藏邀请返利入口，已建立的邀请关系不再产生返利</span>
+        </el-form-item>
         <el-row :gutter="20">
           <el-col :span="12">
             <el-form-item label="一级返利">
@@ -183,6 +187,7 @@ const form = reactive({
   smtp_user: '',
   smtp_password: '',
   smtp_from: '',
+  invite_rebate_enabled: 'true',
   invite_rebate_level1_percent: '10',
   invite_rebate_level2_percent: '5',
   free_max_proxies: '',
@@ -257,6 +262,7 @@ async function handleSaveRebate() {
   savingRebate.value = true
   try {
     await updateSettings({
+      invite_rebate_enabled: form.invite_rebate_enabled,
       invite_rebate_level1_percent: form.invite_rebate_level1_percent,
       invite_rebate_level2_percent: form.invite_rebate_level2_percent,
     })

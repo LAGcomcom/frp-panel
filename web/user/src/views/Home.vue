@@ -67,7 +67,7 @@
         <el-button @click="$router.push('/proxies')">
           <el-icon><Connection /></el-icon>管理代理
         </el-button>
-        <el-button @click="$router.push('/invite')">
+        <el-button v-if="inviteRebateEnabled" @click="$router.push('/invite')">
           <el-icon><Share /></el-icon>邀请好友
         </el-button>
       </div>
@@ -164,7 +164,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { getProfile, getProxies, getTrafficStats, getOrders, getMyAvailableCoupons, getActiveAnnouncements } from '../api'
+import { getProfile, getProxies, getTrafficStats, getOrders, getMyAvailableCoupons, getActiveAnnouncements, getPublicSettings } from '../api'
 
 const proxyStats = ref({ total: 0, running: 0 })
 const planName = ref('免费版')
@@ -177,6 +177,7 @@ const recentOrders = ref<any[]>([])
 const availableCoupons = ref<any[]>([])
 const currentAnnouncement = ref<any>({})
 const showAnnouncement = ref(false)
+const inviteRebateEnabled = ref(true)
 
 const orderStatusMap: Record<string, string> = { paid: '已支付', refunded: '已退款', pending: '待支付', expired: '已过期' }
 
@@ -224,13 +225,14 @@ function dismissAnnouncement() {
 }
 
 onMounted(async () => {
-  const [profileRes, proxiesRes, trafficRes, ordersRes, couponsRes, announcementsRes] = await Promise.allSettled([
+  const [profileRes, proxiesRes, trafficRes, ordersRes, couponsRes, announcementsRes, publicSettingsRes] = await Promise.allSettled([
     getProfile(),
     getProxies({ size: 1000 }),
     getTrafficStats(),
     getOrders({ size: 5 }),
     getMyAvailableCoupons(),
     getActiveAnnouncements(),
+    getPublicSettings(),
   ])
 
   if (profileRes.status === 'fulfilled') {
@@ -291,6 +293,10 @@ onMounted(async () => {
         showAnnouncement.value = true
       }
     }
+  }
+
+  if (publicSettingsRes.status === 'fulfilled') {
+    inviteRebateEnabled.value = publicSettingsRes.value.data?.invite_rebate_enabled !== 'false'
   }
 })
 </script>
