@@ -112,6 +112,10 @@ text() {
 
 normalize_language
 
+has_controlling_tty() {
+  [ -r /dev/tty ] && [ -w /dev/tty ] && ( : < /dev/tty ) 2>/dev/null
+}
+
 usage() {
   text usage
 }
@@ -129,7 +133,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 show_menu() {
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+  if ! has_controlling_tty; then
     MODE="install"
     return
   fi
@@ -180,7 +184,7 @@ fi
 
 confirm_uninstall() {
   [ "$ASSUME_YES" = "1" ] && return
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+  if ! has_controlling_tty; then
     text uninstall_confirm_required >&2
     exit 1
   fi
@@ -354,7 +358,7 @@ if [ ! -f "$CONFIG" ]; then
   CREATED_PASSWORD="${FRP_PANEL_ADMIN_PASSWORD:-$(random_hex 12)}"
   ADMIN_EMAIL="${FRP_PANEL_ADMIN_EMAIL:-admin@example.com}"
   PORT="${FRP_PANEL_PORT:-}"
-  if [ -z "$PORT" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if [ -z "$PORT" ] && has_controlling_tty; then
     printf '%s ' "$(text port_prompt)" > /dev/tty
     IFS= read -r PORT < /dev/tty || PORT=""
   fi
@@ -366,7 +370,7 @@ if [ ! -f "$CONFIG" ]; then
   fi
   HEARTBEAT_ENABLED="${FRP_PANEL_HEARTBEAT_ENABLED:-true}"
   PANEL_DOMAIN="${FRP_PANEL_DOMAIN:-}"
-  if [ -z "$PANEL_DOMAIN" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if [ -z "$PANEL_DOMAIN" ] && has_controlling_tty; then
     printf '%s ' "$(text domain_prompt)" > /dev/tty
     IFS= read -r PANEL_DOMAIN < /dev/tty || PANEL_DOMAIN=""
   fi

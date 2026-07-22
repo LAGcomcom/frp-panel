@@ -144,6 +144,10 @@ text() {
 
 normalize_language
 
+has_controlling_tty() {
+  [ -r /dev/tty ] && [ -w /dev/tty ] && ( : < /dev/tty ) 2>/dev/null
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --install|install) MODE="install" ;;
@@ -164,7 +168,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 show_menu() {
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+  if ! has_controlling_tty; then
     MODE="install"
     return
   fi
@@ -238,7 +242,7 @@ verify_asset() {
 
 confirm_uninstall() {
   [ "$ASSUME_YES" = "1" ] && return
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then text confirm_needed >&2; exit 1; fi
+  if ! has_controlling_tty; then text confirm_needed >&2; exit 1; fi
   printf '%s ' "$(text uninstall_prompt)" > /dev/tty
   IFS= read -r answer < /dev/tty || answer=""
   case "$answer" in y|Y|yes|YES|是) ;; *) text cancelled; exit 0 ;; esac
@@ -310,7 +314,7 @@ prompt_value() {
   env_value=$3
   if [ -n "$env_value" ]; then printf '%s' "$env_value"; return; fi
   if [ "$ASSUME_YES" = "1" ]; then printf '%s' "$default"; return; fi
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if has_controlling_tty; then
     printf '%s ' "$prompt" > /dev/tty
     IFS= read -r value < /dev/tty || value=""
     [ -n "$value" ] || value=$default
