@@ -314,15 +314,17 @@ func (h *PluginHandler) handlePing(c *gin.Context, req PluginRequest, server *mo
 	}
 	if server != nil {
 		apiKey := apiKeyFromPluginContent(content)
-		userObj, err := accesscontrol.LoadUserByAPIKey(h.db, apiKey)
-		if apiKey == "" || err != nil || userObj.Status != "active" {
-			rejectPlugin(c, "invalid user")
-			return
-		}
-		allowed, err := accesscontrol.CanAccessServer(h.db, userObj, server.ID)
-		if err != nil || !allowed {
-			rejectPlugin(c, "node is not available for this user group")
-			return
+		if apiKey != "" {
+			userObj, err := accesscontrol.LoadUserByAPIKey(h.db, apiKey)
+			if err != nil || userObj.Status != "active" {
+				rejectPlugin(c, "invalid user")
+				return
+			}
+			allowed, err := accesscontrol.CanAccessServer(h.db, userObj, server.ID)
+			if err != nil || !allowed {
+				rejectPlugin(c, "node is not available for this user group")
+				return
+			}
 		}
 	}
 

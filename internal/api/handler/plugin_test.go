@@ -111,6 +111,16 @@ func TestSecurePluginRewritesLoginAndEnforcesBandwidth(t *testing.T) {
 	if pingResponse := postPluginRequest(t, router, path, ping); !pingResponse.Reject {
 		t.Fatal("existing connection kept heartbeat access after its group was removed")
 	}
+
+	pingWithoutAPIKey := map[string]interface{}{
+		"version": "0.1.0", "op": "Ping",
+		"content": map[string]interface{}{
+			"user": "user_1",
+		},
+	}
+	if pingResponse := postPluginRequest(t, router, path, pingWithoutAPIKey); pingResponse.Reject {
+		t.Fatalf("secure ping without API key should not disconnect an established client: %s", pingResponse.RejectReason)
+	}
 }
 
 func TestLegacyPluginRequiresDirectlyIndexableAPIKey(t *testing.T) {
