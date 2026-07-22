@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -90,6 +91,206 @@ func TestExternalRefundDoesNotCreditBalanceOrChangeOrder(t *testing.T) {
 	}
 	if err := db.First(&order, order.ID).Error; err != nil || order.PayStatus != "paid" {
 		t.Fatalf("order changed after rejected refund: status=%q err=%v", order.PayStatus, err)
+	}
+}
+
+func TestQueuedBalanceOrderRefundRestoresBalanceAndRemovesEntitlement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "queued-balance-refund")
+	activePlan := model.Plan{Name: "Current", DurationDays: 30, Status: "active"}
+	queuedPlan := model.Plan{Name: "Next", DurationDays: 30, Status: "active"}
+	if err := db.Create(&activePlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&queuedPlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().AddDate(0, 0, 20)
+	user := model.User{
+		Email: "queued-refund@example.com", Password: "x", InviteCode: "queued-refund", APIKey: "queued-refund-key",
+		Role: "user", Status: "active", Balance: 10, PlanID: &activePlan.ID, PlanExpiresAt: &expiresAt,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	order := model.Order{
+		UserID: user.ID, PlanID: queuedPlan.ID, OrderNo: "queued-balance-order", OrderType: "plan",
+		Amount: 9.9, OriginalAmount: 9.9, DurationType: "monthly", PayMethod: "balance", PayStatus: "paid", PaidAt: &now,
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	entitlement := model.PlanEntitlement{
+		UserID: user.ID, PlanID: queuedPlan.ID, OrderID: order.ID, DurationDays: 30, Status: model.PlanEntitlementQueued,
+	}
+	if err := db.Create(&entitlement).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.POST("/orders/:id/refund", NewOrderHandler(db).RefundOrder)
+	recorder := performJSONRequest(router, http.MethodPost, "/orders/"+fmt.Sprint(order.ID)+"/refund", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("refund status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := db.First(&user, user.ID).Error; err != nil || math.Abs(user.Balance-19.9) > 0.000001 {
+		t.Fatalf("refunded balance=%v err=%v", user.Balance, err)
+	}
+	if err := db.First(&order, order.ID).Error; err != nil || order.PayStatus != "refunded" {
+		t.Fatalf("refunded order status=%q err=%v", order.PayStatus, err)
+	}
+	if err := db.First(&entitlement, entitlement.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("queued entitlement still exists: %+v err=%v", entitlement, err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil || user.PlanID == nil || *user.PlanID != activePlan.ID || !user.PlanExpiresAt.Equal(expiresAt) {
+		t.Fatalf("active plan changed after queued refund: %+v err=%v", user, err)
+	}
+
+	second := performJSONRequest(router, http.MethodPost, "/orders/"+fmt.Sprint(order.ID)+"/refund", nil)
+	if second.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate refund status = %d body=%s", second.Code, second.Body.String())
+	}
+	if err := db.First(&user, user.ID).Error; err != nil || math.Abs(user.Balance-19.9) > 0.000001 {
+		t.Fatalf("duplicate refund changed balance=%v err=%v", user.Balance, err)
+	}
+}
+
+func TestActiveBalanceOrderCannotBeRefundedAutomatically(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "active-balance-refund")
+	plan := model.Plan{Name: "Active", DurationDays: 30, Status: "active"}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().AddDate(0, 0, 30)
+	user := model.User{
+		Email: "active-refund@example.com", Password: "x", InviteCode: "active-refund", APIKey: "active-refund-key",
+		Role: "user", Status: "active", Balance: 5, PlanID: &plan.ID, PlanExpiresAt: &expiresAt,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	order := model.Order{
+		UserID: user.ID, PlanID: plan.ID, OrderNo: "active-balance-order", OrderType: "plan",
+		Amount: 20, OriginalAmount: 20, DurationType: "monthly", PayMethod: "balance", PayStatus: "paid", PaidAt: &now,
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	entitlement := model.PlanEntitlement{
+		UserID: user.ID, PlanID: plan.ID, OrderID: order.ID, DurationDays: 30, Status: model.PlanEntitlementActive,
+		StartsAt: &now, ExpiresAt: &expiresAt, ActivatedAt: &now,
+	}
+	if err := db.Create(&entitlement).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.POST("/orders/:id/refund", NewOrderHandler(db).RefundOrder)
+	recorder := performJSONRequest(router, http.MethodPost, "/orders/"+fmt.Sprint(order.ID)+"/refund", nil)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("active refund status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := db.First(&order, order.ID).Error; err != nil || order.PayStatus != "paid" {
+		t.Fatalf("active order changed: status=%q err=%v", order.PayStatus, err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil || user.Balance != 5 {
+		t.Fatalf("active refund changed balance=%v err=%v", user.Balance, err)
+	}
+}
+
+func TestRefundabilityMetadataMatchesBackendAccountingRules(t *testing.T) {
+	db := openAdminHardeningDB(t, "refundability-metadata")
+	queued := &model.PlanEntitlement{Status: model.PlanEntitlementQueued}
+	extended := &model.PlanEntitlement{Status: model.PlanEntitlementExtended}
+	expired := &model.PlanEntitlement{Status: model.PlanEntitlementExpired}
+	orders := []model.Order{
+		{ID: 11, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued},
+		{ID: 12, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, CouponCode: "SAVE10"},
+		{ID: 13, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued},
+		{ID: 14, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: extended},
+		{ID: 15, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: expired},
+		{ID: 16, PayStatus: "paid", PayMethod: "alipay", OrderType: "plan", Entitlement: queued},
+	}
+	if err := db.Create(&model.ReferralRebate{
+		ReferredUserID: 1, OrderID: 13, Level1UserID: 2, Level1Amount: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := NewOrderHandler(db).annotateRefundability(orders); err != nil {
+		t.Fatal(err)
+	}
+	for i := range orders {
+		if i == 0 {
+			if !orders[i].Refundable || orders[i].RefundUnavailableReason != "" {
+				t.Fatalf("eligible order metadata = %+v", orders[i])
+			}
+			continue
+		}
+		if orders[i].Refundable || orders[i].RefundUnavailableReason == "" {
+			t.Fatalf("ineligible order %d metadata = %+v", orders[i].ID, orders[i])
+		}
+	}
+}
+
+func TestQueuedRefundRejectsCouponAndReferralWithoutMutation(t *testing.T) {
+	for _, scenario := range []string{"coupon", "referral"} {
+		t.Run(scenario, func(t *testing.T) {
+			db := openAdminHardeningDB(t, "queued-refund-"+scenario)
+			plan := model.Plan{Name: "Queued", DurationDays: 30, Status: "active"}
+			if err := db.Create(&plan).Error; err != nil {
+				t.Fatal(err)
+			}
+			user := model.User{
+				Email: scenario + "@example.com", Password: "x", InviteCode: scenario, APIKey: scenario + "-key",
+				Role: "user", Status: "active", Balance: 8,
+			}
+			if err := db.Create(&user).Error; err != nil {
+				t.Fatal(err)
+			}
+			order := model.Order{
+				UserID: user.ID, PlanID: plan.ID, OrderNo: "queued-" + scenario, OrderType: "plan",
+				Amount: 12, OriginalAmount: 12, DurationType: "monthly", PayMethod: "balance", PayStatus: "paid",
+			}
+			if scenario == "coupon" {
+				order.CouponCode = "SAVE10"
+			}
+			if err := db.Create(&order).Error; err != nil {
+				t.Fatal(err)
+			}
+			entitlement := model.PlanEntitlement{
+				UserID: user.ID, PlanID: plan.ID, OrderID: order.ID, DurationDays: 30, Status: model.PlanEntitlementQueued,
+			}
+			if err := db.Create(&entitlement).Error; err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "referral" {
+				if err := db.Create(&model.ReferralRebate{
+					ReferredUserID: user.ID, OrderID: order.ID, Level1UserID: user.ID, Level1Amount: 1,
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			router := gin.New()
+			router.POST("/orders/:id/refund", NewOrderHandler(db).RefundOrder)
+			recorder := performJSONRequest(router, http.MethodPost, "/orders/"+fmt.Sprint(order.ID)+"/refund", nil)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("refund status = %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if err := db.First(&order, order.ID).Error; err != nil || order.PayStatus != "paid" {
+				t.Fatalf("rejected order changed: status=%q err=%v", order.PayStatus, err)
+			}
+			if err := db.First(&user, user.ID).Error; err != nil || user.Balance != 8 {
+				t.Fatalf("rejected refund changed balance=%v err=%v", user.Balance, err)
+			}
+			if err := db.First(&entitlement, entitlement.ID).Error; err != nil || entitlement.Status != model.PlanEntitlementQueued {
+				t.Fatalf("rejected refund changed entitlement=%+v err=%v", entitlement, err)
+			}
+		})
 	}
 }
 

@@ -21,6 +21,7 @@ type OrderHandler struct {
 var (
 	errInsufficientBalance = errors.New("insufficient balance")
 	errOrderAlreadyPaid    = errors.New("order already paid")
+	errOrderNotRefundable  = errors.New("order is no longer refundable")
 )
 
 func NewOrderHandler(db *gorm.DB) *OrderHandler {
@@ -499,9 +500,70 @@ func (h *OrderHandler) AdminListOrders(c *gin.Context) {
 	query.Count(&total)
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("User").Preload("Plan").Preload("Entitlement").Find(&orders)
+	result := query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("User").Preload("Plan").Preload("Entitlement").Find(&orders)
+	if result.Error != nil {
+		response.InternalError(c, "订单列表加载失败，请稍后重试")
+		return
+	}
+	if err := h.annotateRefundability(orders); err != nil {
+		response.InternalError(c, "退款状态检查失败，请稍后重试")
+		return
+	}
 
 	response.Page(c, orders, total, parseInt(page), parseInt(size))
+}
+
+func (h *OrderHandler) annotateRefundability(orders []model.Order) error {
+	candidateIDs := make([]uint, 0, len(orders))
+	for i := range orders {
+		if refundUnavailableReason(&orders[i], false) == "" {
+			candidateIDs = append(candidateIDs, orders[i].ID)
+		}
+	}
+
+	rebateOrders := make(map[uint]struct{}, len(candidateIDs))
+	if len(candidateIDs) > 0 {
+		var orderIDs []uint
+		if err := h.db.Model(&model.ReferralRebate{}).
+			Where("order_id IN ?", candidateIDs).
+			Distinct("order_id").
+			Pluck("order_id", &orderIDs).Error; err != nil {
+			return err
+		}
+		for _, orderID := range orderIDs {
+			rebateOrders[orderID] = struct{}{}
+		}
+	}
+
+	for i := range orders {
+		_, hasRebate := rebateOrders[orders[i].ID]
+		reason := refundUnavailableReason(&orders[i], hasRebate)
+		orders[i].Refundable = reason == ""
+		orders[i].RefundUnavailableReason = reason
+	}
+	return nil
+}
+
+func refundUnavailableReason(order *model.Order, hasRebate bool) string {
+	if order.PayStatus != "paid" {
+		return "只有已支付订单可以退款"
+	}
+	if order.PayMethod != "balance" {
+		return "外部支付订单需要先在对应支付渠道完成退款"
+	}
+	if order.OrderType != "plan" || order.Entitlement == nil {
+		return "该订单没有可回收的套餐权益，无法自动退款"
+	}
+	if order.Entitlement.Status != model.PlanEntitlementQueued {
+		return "套餐已经开始生效，不能自动退款"
+	}
+	if order.CouponCode != "" {
+		return "使用优惠券的订单需要人工核对后退款"
+	}
+	if hasRebate {
+		return "该订单已产生邀请返利，需要人工核对后退款"
+	}
+	return ""
 }
 
 // Admin: Refund order
@@ -509,21 +571,68 @@ func (h *OrderHandler) RefundOrder(c *gin.Context) {
 	orderID := c.Param("id")
 
 	var order model.Order
-	if err := h.db.First(&order, orderID).Error; err != nil {
+	if err := h.db.Preload("User").Preload("Entitlement").First(&order, orderID).Error; err != nil {
 		response.NotFound(c, "order not found")
 		return
 	}
-
-	if order.PayStatus != "paid" {
-		response.BadRequest(c, "only paid orders can be refunded")
+	if !authorizeManageableUser(c, &order.User) {
 		return
 	}
 
-	if order.PayMethod != "balance" {
-		response.BadRequest(c, "该订单使用外部支付，面板暂不支持自动原路退款，请先在支付渠道完成退款")
+	if reason := refundUnavailableReason(&order, false); reason != "" {
+		response.BadRequest(c, reason)
 		return
 	}
-	response.BadRequest(c, "余额支付退款需要同时回收套餐、优惠券和返利权益，当前暂不支持自动退款")
+	var rebateCount int64
+	if err := h.db.Model(&model.ReferralRebate{}).Where("order_id = ?", order.ID).Count(&rebateCount).Error; err != nil {
+		response.InternalError(c, "退款检查失败，请稍后重试")
+		return
+	}
+	if rebateCount > 0 {
+		response.BadRequest(c, refundUnavailableReason(&order, true))
+		return
+	}
+
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		claim := tx.Model(&model.Order{}).
+			Where("id = ? AND pay_status = ?", order.ID, "paid").
+			Update("pay_status", "refunded")
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return errOrderNotRefundable
+		}
+
+		removed := tx.Where("id = ? AND status = ?", order.Entitlement.ID, model.PlanEntitlementQueued).
+			Delete(&model.PlanEntitlement{})
+		if removed.Error != nil {
+			return removed.Error
+		}
+		if removed.RowsAffected != 1 {
+			return errOrderNotRefundable
+		}
+
+		credited := tx.Model(&model.User{}).Where("id = ?", order.UserID).
+			Update("balance", gorm.Expr("balance + ?", order.Amount))
+		if credited.Error != nil {
+			return credited.Error
+		}
+		if credited.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	if errors.Is(err, errOrderNotRefundable) {
+		response.BadRequest(c, "订单状态已变化，请刷新后重试")
+		return
+	}
+	if err != nil {
+		response.InternalError(c, "退款处理失败，请稍后重试")
+		return
+	}
+
+	response.SuccessWithMessage(c, "退款成功，未生效套餐已取消，金额已退回用户余额", nil)
 }
 
 // RechargeBalance adds balance to user account (admin only)

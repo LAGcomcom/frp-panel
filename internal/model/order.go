@@ -29,6 +29,9 @@ type Order struct {
 	User        User             `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	Plan        Plan             `gorm:"foreignKey:PlanID" json:"plan,omitempty"`
 	Entitlement *PlanEntitlement `gorm:"foreignKey:OrderID" json:"entitlement,omitempty"`
+
+	Refundable              bool   `gorm:"-" json:"refundable,omitempty"`
+	RefundUnavailableReason string `gorm:"-" json:"refund_unavailable_reason,omitempty"`
 }
 
 func (Order) TableName() string {

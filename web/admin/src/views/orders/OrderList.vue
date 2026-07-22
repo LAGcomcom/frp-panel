@@ -36,6 +36,23 @@
       <el-table-column prop="created_at" label="创建时间" width="170">
         <template #default="{ row }">{{ new Date(row.created_at).toLocaleString('zh-CN') }}</template>
       </el-table-column>
+      <el-table-column label="操作" width="100" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            v-if="canRefund(row)"
+            type="danger"
+            plain
+            size="small"
+            :loading="refundingOrderId === row.id"
+            :disabled="refundingOrderId !== null && refundingOrderId !== row.id"
+            @click="handleRefund(row)"
+          >退款</el-button>
+          <el-tooltip v-else-if="row.pay_status === 'paid'" :content="refundUnavailableReason(row)" placement="top">
+            <span><el-button type="info" plain size="small" disabled>退款</el-button></span>
+          </el-tooltip>
+          <span v-else class="empty-action">-</span>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-pagination
@@ -50,13 +67,15 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getOrders } from '../../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getOrders, refundOrder } from '../../api'
 
 const orders = ref<any[]>([])
 const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+const refundingOrderId = ref<number | null>(null)
 
 const durationMap: Record<string, string> = { monthly: '月付', quarterly: '季付', yearly: '年付' }
 const methodMap: Record<string, string> = { balance: '余额', alipay: '支付宝', wechat: '微信' }
@@ -75,8 +94,40 @@ async function fetchData() {
   }
 }
 
+function canRefund(order: any): boolean {
+  return order.refundable === true
+}
+
+function refundUnavailableReason(order: any): string {
+  return order.refund_unavailable_reason || '该订单需要人工核对后退款'
+}
+
+async function handleRefund(order: any) {
+  try {
+    await ElMessageBox.confirm(
+      `确认退回订单 ${order.order_no} 的 ¥${Number(order.amount).toFixed(2)}？未生效的排队套餐将同时取消。`,
+      '确认退款',
+      { type: 'warning', confirmButtonText: '确认退款', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  refundingOrderId.value = order.id
+  try {
+    await refundOrder(order.id)
+    ElMessage.success('退款成功，金额已退回用户余额')
+    await fetchData()
+  } finally {
+    refundingOrderId.value = null
+  }
+}
+
 </script>
 
 <style scoped>
 /* page-header and page-title are defined in design-system.css */
+.empty-action {
+  color: var(--el-text-color-placeholder);
+}
 </style>
