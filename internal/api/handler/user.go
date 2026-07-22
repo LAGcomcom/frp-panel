@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/smtp"
@@ -549,13 +550,13 @@ func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 	}
 
 	var req struct {
-		Role           string  `json:"role"`
-		Balance        float64 `json:"balance"`
-		Status         string  `json:"status"`
-		PlanID         *uint   `json:"plan_id"`
-		GroupID        *uint   `json:"group_id"`
-		ClearGroup     bool    `json:"clear_group"`
-		BandwidthLimit *int64  `json:"bandwidth_limit"`
+		Role           string          `json:"role"`
+		Balance        json.RawMessage `json:"balance"`
+		Status         json.RawMessage `json:"status"`
+		PlanID         *uint           `json:"plan_id"`
+		GroupID        *uint           `json:"group_id"`
+		ClearGroup     bool            `json:"clear_group"`
+		BandwidthLimit *int64          `json:"bandwidth_limit"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -579,11 +580,13 @@ func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 		}
 		updates["role"] = req.Role
 	}
-	if req.Balance != 0 {
-		updates["balance"] = req.Balance
+	if len(req.Balance) > 0 {
+		response.BadRequest(c, "请使用管理员充值功能调整用户余额")
+		return
 	}
-	if req.Status != "" {
-		updates["status"] = req.Status
+	if len(req.Status) > 0 {
+		response.BadRequest(c, "请使用封禁或解封操作调整用户状态")
+		return
 	}
 	if req.PlanID != nil {
 		response.BadRequest(c, "请使用套餐分配接口调整用户套餐")
@@ -607,6 +610,10 @@ func (h *UserHandler) AdminUpdateUser(c *gin.Context) {
 			return
 		}
 		updates["bandwidth_limit"] = *req.BandwidthLimit
+	}
+	if len(updates) == 0 {
+		response.BadRequest(c, "没有可更新的用户信息")
+		return
 	}
 
 	if err := h.db.Model(&model.User{}).Where("id = ?", id).Updates(updates).Error; err != nil {
@@ -725,11 +732,15 @@ func (h *UserHandler) requireManageableUser(c *gin.Context, id string, forbidSel
 
 func authorizeManageableUser(c *gin.Context, target *model.User) bool {
 	actorRole, _ := c.Get("role")
-	if actorRole != "super_admin" && target.Role != "user" {
+	if !canManageUser(fmt.Sprint(actorRole), target) {
 		response.Forbidden(c, "普通管理员只能管理普通用户")
 		return false
 	}
 	return true
+}
+
+func canManageUser(actorRole string, target *model.User) bool {
+	return actorRole == "super_admin" || target.Role == "user"
 }
 
 func parseInt(s string) int {

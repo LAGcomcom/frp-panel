@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,55 @@ func TestAdminCannotManageSuperAdminOrChangeRoles(t *testing.T) {
 	}
 	if err := db.First(&regular, regular.ID).Error; err != nil || regular.Role != "admin" {
 		t.Fatalf("regular user role = %q err=%v", regular.Role, err)
+	}
+}
+
+func TestAdminUpdateCannotBypassBalanceOrStatusWorkflows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "admin-user-workflow-guard")
+	group := model.UserGroup{Name: "workflow-group"}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	admin := model.User{Email: "workflow-admin@example.com", Password: "x", InviteCode: "workflow-admin", APIKey: "workflow-admin-key", Role: "admin", Status: "active"}
+	regular := model.User{Email: "workflow-user@example.com", Password: "x", InviteCode: "workflow-user", APIKey: "workflow-user-key", Role: "user", Status: "active", Balance: 10}
+	for _, user := range []*model.User{&admin, &regular} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("user_id", admin.ID)
+		c.Set("role", "admin")
+		c.Next()
+	})
+	router.PUT("/users/:id", NewUserHandler(db, nil).AdminUpdateUser)
+
+	for _, payload := range []string{`{"balance":999}`, `{"balance":0}`, `{"balance":null}`, `{"status":"banned"}`, `{"status":"unexpected"}`, `{"status":null}`, `{}`} {
+		recorder := performJSONRequest(router, http.MethodPut, "/users/"+fmt.Sprint(regular.ID), []byte(payload))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("direct user mutation payload=%s status=%d body=%s", payload, recorder.Code, recorder.Body.String())
+		}
+	}
+	if err := db.First(&regular, regular.ID).Error; err != nil || regular.Balance != 10 || regular.Status != "active" {
+		t.Fatalf("rejected direct mutation changed user: balance=%v status=%q err=%v", regular.Balance, regular.Status, err)
+	}
+
+	allowed := performJSONRequest(router, http.MethodPut, "/users/"+fmt.Sprint(regular.ID), []byte(fmt.Sprintf(`{"group_id":%d,"bandwidth_limit":1048576}`, group.ID)))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("allowed access update status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	if err := db.First(&regular, regular.ID).Error; err != nil || regular.GroupID == nil || *regular.GroupID != group.ID || regular.GroupSource != "manual" || regular.BandwidthLimit != 1048576 {
+		t.Fatalf("allowed access update user=%+v err=%v", regular, err)
+	}
+	cleared := performJSONRequest(router, http.MethodPut, "/users/"+fmt.Sprint(regular.ID), []byte(`{"clear_group":true}`))
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear group status=%d body=%s", cleared.Code, cleared.Body.String())
+	}
+	if err := db.First(&regular, regular.ID).Error; err != nil || regular.GroupID != nil || regular.GroupSource != "" || regular.BandwidthLimit != 1048576 {
+		t.Fatalf("clear group changed unrelated access settings: user=%+v err=%v", regular, err)
 	}
 }
 
@@ -207,12 +257,12 @@ func TestRefundabilityMetadataMatchesBackendAccountingRules(t *testing.T) {
 	extended := &model.PlanEntitlement{Status: model.PlanEntitlementExtended}
 	expired := &model.PlanEntitlement{Status: model.PlanEntitlementExpired}
 	orders := []model.Order{
-		{ID: 11, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued},
-		{ID: 12, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, CouponCode: "SAVE10"},
-		{ID: 13, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued},
-		{ID: 14, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: extended},
-		{ID: 15, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: expired},
-		{ID: 16, PayStatus: "paid", PayMethod: "alipay", OrderType: "plan", Entitlement: queued},
+		{ID: 11, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, User: model.User{Role: "user"}},
+		{ID: 12, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, CouponCode: "SAVE10", User: model.User{Role: "user"}},
+		{ID: 13, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, User: model.User{Role: "user"}},
+		{ID: 14, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: extended, User: model.User{Role: "user"}},
+		{ID: 15, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: expired, User: model.User{Role: "user"}},
+		{ID: 16, PayStatus: "paid", PayMethod: "alipay", OrderType: "plan", Entitlement: queued, User: model.User{Role: "user"}},
 	}
 	if err := db.Create(&model.ReferralRebate{
 		ReferredUserID: 1, OrderID: 13, Level1UserID: 2, Level1Amount: 1,
@@ -220,7 +270,7 @@ func TestRefundabilityMetadataMatchesBackendAccountingRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := NewOrderHandler(db).annotateRefundability(orders); err != nil {
+	if err := NewOrderHandler(db).annotateRefundability("admin", orders); err != nil {
 		t.Fatal(err)
 	}
 	for i := range orders {
@@ -232,6 +282,84 @@ func TestRefundabilityMetadataMatchesBackendAccountingRules(t *testing.T) {
 		}
 		if orders[i].Refundable || orders[i].RefundUnavailableReason == "" {
 			t.Fatalf("ineligible order %d metadata = %+v", orders[i].ID, orders[i])
+		}
+	}
+}
+
+func TestRefundabilityMetadataRespectsAdministratorScope(t *testing.T) {
+	db := openAdminHardeningDB(t, "refundability-admin-scope")
+	queued := &model.PlanEntitlement{Status: model.PlanEntitlementQueued}
+	makeOrders := func() []model.Order {
+		return []model.Order{
+			{ID: 21, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, User: model.User{Role: "user"}},
+			{ID: 22, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, User: model.User{Role: "admin"}},
+			{ID: 23, PayStatus: "paid", PayMethod: "balance", OrderType: "plan", Entitlement: queued, User: model.User{Role: "super_admin"}},
+		}
+	}
+
+	adminOrders := makeOrders()
+	if err := NewOrderHandler(db).annotateRefundability("admin", adminOrders); err != nil {
+		t.Fatal(err)
+	}
+	if !adminOrders[0].Refundable || adminOrders[1].Refundable || adminOrders[2].Refundable {
+		t.Fatalf("admin refundability metadata = %+v", adminOrders)
+	}
+	for _, order := range adminOrders[1:] {
+		if order.RefundUnavailableReason == "" {
+			t.Fatalf("missing authorization reason for order %d", order.ID)
+		}
+	}
+
+	superOrders := makeOrders()
+	if err := NewOrderHandler(db).annotateRefundability("super_admin", superOrders); err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range superOrders {
+		if !order.Refundable || order.RefundUnavailableReason != "" {
+			t.Fatalf("super-admin order metadata = %+v", order)
+		}
+	}
+}
+
+func TestUserOrderResponsesHideAdminAuditFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "order-audit-privacy")
+	user := model.User{Email: "audit-user@example.com", Password: "x", InviteCode: "audit-user", APIKey: "audit-user-key", Role: "user", Status: "active"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := model.Order{
+		UserID: user.ID, OrderNo: "audit-private-order", OrderType: "recharge", Amount: 5, OriginalAmount: 5,
+		DurationType: "recharge", PayMethod: "admin", PayStatus: "paid", Remark: "internal note",
+		OperatorID: 99, OperatorEmail: "operator@example.com",
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	userRouter := gin.New()
+	userRouter.Use(func(c *gin.Context) { c.Set("user_id", user.ID); c.Next() })
+	userRouter.GET("/orders", NewOrderHandler(db).ListOrders)
+	userResponse := performJSONRequest(userRouter, http.MethodGet, "/orders", nil)
+	if userResponse.Code != http.StatusOK {
+		t.Fatalf("user order list status=%d body=%s", userResponse.Code, userResponse.Body.String())
+	}
+	for _, secret := range []string{"internal note", "operator@example.com", `"operator_id"`, `"remark"`} {
+		if strings.Contains(userResponse.Body.String(), secret) {
+			t.Fatalf("user order response exposed %q: %s", secret, userResponse.Body.String())
+		}
+	}
+
+	adminRouter := gin.New()
+	adminRouter.Use(func(c *gin.Context) { c.Set("role", "super_admin"); c.Next() })
+	adminRouter.GET("/orders", NewOrderHandler(db).AdminListOrders)
+	adminResponse := performJSONRequest(adminRouter, http.MethodGet, "/orders", nil)
+	if adminResponse.Code != http.StatusOK {
+		t.Fatalf("admin order list status=%d body=%s", adminResponse.Code, adminResponse.Body.String())
+	}
+	for _, auditValue := range []string{"internal note", "operator@example.com", `"operator_id":99`} {
+		if !strings.Contains(adminResponse.Body.String(), auditValue) {
+			t.Fatalf("admin order response missing %q: %s", auditValue, adminResponse.Body.String())
 		}
 	}
 }
@@ -835,6 +963,37 @@ func TestAdminRechargeAuthorizationAndRollback(t *testing.T) {
 	if forbidden.Code != http.StatusForbidden {
 		t.Fatalf("admin recharge super-admin status=%d body=%s", forbidden.Code, forbidden.Body.String())
 	}
+	missingActorRouter := gin.New()
+	missingActorRouter.Use(func(c *gin.Context) { c.Set("role", "super_admin"); c.Next() })
+	missingActorRouter.POST("/recharge", handler.RechargeBalance)
+	missingActor := performJSONRequest(missingActorRouter, http.MethodPost, "/recharge", []byte(fmt.Sprintf(`{"user_id":%d,"amount":5}`, regular.ID)))
+	if missingActor.Code != http.StatusUnauthorized {
+		t.Fatalf("missing actor recharge status=%d body=%s", missingActor.Code, missingActor.Body.String())
+	}
+
+	superRouter := gin.New()
+	superRouter.Use(func(c *gin.Context) {
+		c.Set("user_id", superAdmin.ID)
+		c.Set("email", superAdmin.Email)
+		c.Set("role", "super_admin")
+		c.Next()
+	})
+	superRouter.POST("/recharge", handler.RechargeBalance)
+	longRemark := performJSONRequest(superRouter, http.MethodPost, "/recharge", []byte(fmt.Sprintf(`{"user_id":%d,"amount":5,"remark":%q}`, regular.ID, strings.Repeat("a", 501))))
+	if longRemark.Code != http.StatusBadRequest {
+		t.Fatalf("long recharge remark status=%d body=%s", longRemark.Code, longRemark.Body.String())
+	}
+	succeeded := performJSONRequest(superRouter, http.MethodPost, "/recharge", []byte(fmt.Sprintf(`{"user_id":%d,"amount":5,"remark":"accounting test"}`, regular.ID)))
+	if succeeded.Code != http.StatusOK {
+		t.Fatalf("successful recharge status=%d body=%s", succeeded.Code, succeeded.Body.String())
+	}
+	if err := db.First(&regular, regular.ID).Error; err != nil || regular.Balance != 15 {
+		t.Fatalf("successful recharge balance=%v err=%v", regular.Balance, err)
+	}
+	var rechargeOrder model.Order
+	if err := db.Where("user_id = ? AND order_type = ?", regular.ID, "recharge").First(&rechargeOrder).Error; err != nil || rechargeOrder.Amount != 5 || rechargeOrder.PayMethod != "admin" || rechargeOrder.PayStatus != "paid" || rechargeOrder.Remark != "accounting test" || rechargeOrder.OperatorID != superAdmin.ID || rechargeOrder.OperatorEmail != superAdmin.Email {
+		t.Fatalf("successful recharge order=%+v err=%v", rechargeOrder, err)
+	}
 
 	if err := db.Callback().Create().Before("gorm:create").Register("test:fail-admin-recharge-order", func(tx *gorm.DB) {
 		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Order" {
@@ -843,14 +1002,11 @@ func TestAdminRechargeAuthorizationAndRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	superRouter := gin.New()
-	superRouter.Use(func(c *gin.Context) { c.Set("role", "super_admin"); c.Next() })
-	superRouter.POST("/recharge", handler.RechargeBalance)
 	failed := performJSONRequest(superRouter, http.MethodPost, "/recharge", []byte(fmt.Sprintf(`{"user_id":%d,"amount":5}`, regular.ID)))
 	if failed.Code != http.StatusInternalServerError {
 		t.Fatalf("failed recharge status=%d body=%s", failed.Code, failed.Body.String())
 	}
-	if err := db.First(&regular, regular.ID).Error; err != nil || regular.Balance != 10 {
+	if err := db.First(&regular, regular.ID).Error; err != nil || regular.Balance != 15 {
 		t.Fatalf("failed recharge changed balance=%v err=%v", regular.Balance, err)
 	}
 }

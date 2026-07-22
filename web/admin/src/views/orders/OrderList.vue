@@ -15,7 +15,7 @@
         <template #default="{ row }">{{ row.user?.email }}</template>
       </el-table-column>
       <el-table-column label="套餐" width="120">
-        <template #default="{ row }">{{ row.plan?.name }}</template>
+        <template #default="{ row }">{{ row.order_type === 'recharge' ? '余额充值' : row.plan?.name || '-' }}</template>
       </el-table-column>
       <el-table-column prop="amount" label="金额" width="100">
         <template #default="{ row }"><span class="text-mono">&yen;{{ row.amount?.toFixed(2) }}</span></template>
@@ -31,6 +31,12 @@
           <el-tag :type="row.pay_status === 'paid' ? 'success' : row.pay_status === 'refunded' ? 'danger' : 'warning'" size="small">
             {{ statusMap[row.pay_status] || row.pay_status }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="账务说明" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <div>{{ row.remark || '-' }}</div>
+          <div v-if="row.operator_email" class="operator-email">操作人：{{ row.operator_email }}</div>
         </template>
       </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="170">
@@ -77,8 +83,8 @@ const pageSize = ref(20)
 const total = ref(0)
 const refundingOrderId = ref<number | null>(null)
 
-const durationMap: Record<string, string> = { monthly: '月付', quarterly: '季付', yearly: '年付' }
-const methodMap: Record<string, string> = { balance: '余额', alipay: '支付宝', wechat: '微信' }
+const durationMap: Record<string, string> = { monthly: '月付', quarterly: '季付', yearly: '年付', recharge: '充值' }
+const methodMap: Record<string, string> = { balance: '余额', alipay: '支付宝', wechat: '微信', admin: '管理员' }
 const statusMap: Record<string, string> = { paid: '已支付', refunded: '已退款', pending: '待支付', expired: '已过期' }
 
 onMounted(() => fetchData())
@@ -129,5 +135,10 @@ async function handleRefund(order: any) {
 /* page-header and page-title are defined in design-system.css */
 .empty-action {
   color: var(--el-text-color-placeholder);
+}
+.operator-email {
+  margin-top: 2px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 </style>

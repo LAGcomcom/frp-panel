@@ -20,6 +20,9 @@ type Order struct {
 	PayMethod      string         `gorm:"size:20" json:"pay_method"`                          // alipay, wechat, usdt, epay, balance, admin
 	PayStatus      string         `gorm:"size:20;default:pending;not null" json:"pay_status"` // pending, paid, refunded, expired
 	TradeNo        string         `gorm:"size:255" json:"trade_no"`
+	Remark         string         `gorm:"size:500" json:"-"`
+	OperatorID     uint           `gorm:"index" json:"-"`
+	OperatorEmail  string         `gorm:"size:255" json:"-"`
 	PaidAt         *time.Time     `json:"paid_at"`
 	ExpiresAt      *time.Time     `json:"expires_at"`
 	CreatedAt      time.Time      `json:"created_at"`
@@ -32,6 +35,9 @@ type Order struct {
 
 	Refundable              bool   `gorm:"-" json:"refundable,omitempty"`
 	RefundUnavailableReason string `gorm:"-" json:"refund_unavailable_reason,omitempty"`
+	AdminRemark             string `gorm:"-" json:"remark,omitempty"`
+	AdminOperatorID         uint   `gorm:"-" json:"operator_id,omitempty"`
+	AdminOperatorEmail      string `gorm:"-" json:"operator_email,omitempty"`
 }
 
 func (Order) TableName() string {

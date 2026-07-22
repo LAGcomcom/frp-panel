@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
@@ -505,7 +506,8 @@ func (h *OrderHandler) AdminListOrders(c *gin.Context) {
 		response.InternalError(c, "订单列表加载失败，请稍后重试")
 		return
 	}
-	if err := h.annotateRefundability(orders); err != nil {
+	actorRole, _ := c.Get("role")
+	if err := h.annotateRefundability(fmt.Sprint(actorRole), orders); err != nil {
 		response.InternalError(c, "退款状态检查失败，请稍后重试")
 		return
 	}
@@ -513,10 +515,13 @@ func (h *OrderHandler) AdminListOrders(c *gin.Context) {
 	response.Page(c, orders, total, parseInt(page), parseInt(size))
 }
 
-func (h *OrderHandler) annotateRefundability(orders []model.Order) error {
+func (h *OrderHandler) annotateRefundability(actorRole string, orders []model.Order) error {
 	candidateIDs := make([]uint, 0, len(orders))
 	for i := range orders {
-		if refundUnavailableReason(&orders[i], false) == "" {
+		orders[i].AdminRemark = orders[i].Remark
+		orders[i].AdminOperatorID = orders[i].OperatorID
+		orders[i].AdminOperatorEmail = orders[i].OperatorEmail
+		if canManageUser(actorRole, &orders[i].User) && refundUnavailableReason(&orders[i], false) == "" {
 			candidateIDs = append(candidateIDs, orders[i].ID)
 		}
 	}
@@ -536,6 +541,11 @@ func (h *OrderHandler) annotateRefundability(orders []model.Order) error {
 	}
 
 	for i := range orders {
+		if !canManageUser(actorRole, &orders[i].User) {
+			orders[i].Refundable = false
+			orders[i].RefundUnavailableReason = "当前管理员没有权限操作该账号的订单"
+			continue
+		}
 		_, hasRebate := rebateOrders[orders[i].ID]
 		reason := refundUnavailableReason(&orders[i], hasRebate)
 		orders[i].Refundable = reason == ""
@@ -646,6 +656,11 @@ func (h *OrderHandler) RechargeBalance(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	req.Remark = strings.TrimSpace(req.Remark)
+	if len([]rune(req.Remark)) > 500 {
+		response.BadRequest(c, "充值备注不能超过 500 个字符")
+		return
+	}
 
 	var user model.User
 	if err := h.db.First(&user, req.UserID).Error; err != nil {
@@ -653,6 +668,22 @@ func (h *OrderHandler) RechargeBalance(c *gin.Context) {
 		return
 	}
 	if !authorizeManageableUser(c, &user) {
+		return
+	}
+	operatorID, ok := c.Get("user_id")
+	if !ok {
+		response.Unauthorized(c, "管理员身份信息缺失")
+		return
+	}
+	operatorUserID, ok := operatorID.(uint)
+	if !ok || operatorUserID == 0 {
+		response.Unauthorized(c, "管理员身份信息无效")
+		return
+	}
+	operatorEmailValue, ok := c.Get("email")
+	operatorEmail, ok := operatorEmailValue.(string)
+	if !ok || strings.TrimSpace(operatorEmail) == "" {
+		response.Unauthorized(c, "管理员身份信息无效")
 		return
 	}
 
@@ -667,6 +698,9 @@ func (h *OrderHandler) RechargeBalance(c *gin.Context) {
 		DurationType:   "recharge",
 		PayMethod:      "admin",
 		PayStatus:      "paid",
+		Remark:         req.Remark,
+		OperatorID:     operatorUserID,
+		OperatorEmail:  operatorEmail,
 		PaidAt:         &now,
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
