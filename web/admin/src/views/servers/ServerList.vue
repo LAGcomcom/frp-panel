@@ -24,9 +24,11 @@
         </el-table-column>
 		<el-table-column label="鉴权" width="100">
 		  <template #default="{ row }">
-			<el-tag :type="row.plugin_auth_enabled ? 'success' : 'warning'" size="small">
-			  {{ row.plugin_auth_enabled ? '安全模式' : '需重新部署' }}
-			</el-tag>
+			<el-tooltip :content="pluginAuthMessage(row)" placement="top" :disabled="pluginAuthReady(row)">
+			  <el-tag :type="pluginAuthReady(row) ? 'success' : 'warning'" size="small">
+			    {{ pluginAuthReady(row) ? '安全模式' : '需重新部署' }}
+			  </el-tag>
+			</el-tooltip>
 		  </template>
 		</el-table-column>
         <el-table-column label="延迟" width="80">
@@ -37,12 +39,22 @@
         </el-table-column>
         <el-table-column prop="client_count" label="客户端" width="80" />
         <el-table-column prop="proxy_count" label="代理数" width="80" />
-        <el-table-column label="操作" width="200" align="center" fixed="right">
+        <el-table-column label="操作" width="280" align="center" fixed="right">
           <template #default="{ row }">
             <div class="action-btns">
               <el-button size="small" @click="$router.push(`/servers/${row.id}`)">详情</el-button>
-              <el-button size="small" @click="handleRestart(row)" :disabled="row.status !== 'running'">重启</el-button>
-              <el-button size="small" type="danger" @click="handleStop(row)" :disabled="row.status !== 'running'">停止</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :loading="actionLoading(row, 'deploy')"
+                :disabled="row.status === 'installing'"
+                @click="handleDeploy(row)"
+              >
+                {{ row.status === 'pending' ? '部署' : '重装' }}
+              </el-button>
+              <el-button size="small" :loading="actionLoading(row, 'restart')" @click="handleRestart(row)" :disabled="row.status !== 'running'">重启</el-button>
+              <el-button size="small" type="danger" :loading="actionLoading(row, 'stop')" @click="handleStop(row)" :disabled="row.status !== 'running'">停止</el-button>
             </div>
           </template>
         </el-table-column>
@@ -98,7 +110,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, reactive } from 'vue'
-import { getServers, createServer, restartServer, stopServer } from '../../api'
+import { getServers, createServer, deployServer, restartServer, stopServer } from '../../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const servers = ref<any[]>([])
@@ -108,9 +120,36 @@ const pageSize = ref(20)
 const total = ref(0)
 const showAdd = ref(false)
 const addLoading = ref(false)
+const runningActions = ref<Record<string, boolean>>({})
 
 const statusMap: Record<string, string> = {
   pending: '待部署', installing: '安装中', running: '运行中', stopped: '已停止', error: '异常',
+}
+
+function pluginAuthReady(row: any) {
+  if (row.plugin_auth_status) return row.plugin_auth_status === 'ready'
+  return !!row.plugin_auth_enabled
+}
+
+function pluginAuthMessage(row: any) {
+  return row.plugin_auth_message || (pluginAuthReady(row) ? '安全模式' : '请重新部署节点后再生成客户端配置')
+}
+
+function actionKey(row: any, action: string) {
+  return `${row.id}:${action}`
+}
+
+function actionLoading(row: any, action: string) {
+  return !!runningActions.value[actionKey(row, action)]
+}
+
+function setActionLoading(row: any, action: string, value: boolean) {
+  runningActions.value = { ...runningActions.value, [actionKey(row, action)]: value }
+  if (!value) {
+    const next = { ...runningActions.value }
+    delete next[actionKey(row, action)]
+    runningActions.value = next
+  }
 }
 
 const addForm = reactive({
@@ -143,20 +182,73 @@ async function handleAdd() {
   }
 }
 
+async function handleDeploy(row: any) {
+  try {
+    await ElMessageBox.confirm(`确认在 ${row.name} (${row.ip}) 上重新部署 frps？`, row.status === 'pending' ? '确认部署' : '确认重装')
+  } catch {
+    return
+  }
+  setActionLoading(row, 'deploy', true)
+  try {
+    await deployServer(row.id)
+    row.status = 'installing'
+    ElMessage.success('部署任务已提交，请稍后刷新查看状态')
+    setTimeout(fetchData, 1200)
+  } catch (e: any) {
+    ElMessage.error(e.message || '部署任务提交失败')
+  } finally {
+    setActionLoading(row, 'deploy', false)
+  }
+}
+
 async function handleRestart(row: any) {
-  await ElMessageBox.confirm(`确认重启 ${row.name} 上的 frps？`, '确认重启')
-  await restartServer(row.id)
-  ElMessage.success('重启指令已发送')
+  try {
+    await ElMessageBox.confirm(`确认重启 ${row.name} 上的 frps？`, '确认重启')
+  } catch {
+    return
+  }
+  setActionLoading(row, 'restart', true)
+  try {
+    await restartServer(row.id)
+    ElMessage.success('重启成功')
+    await fetchData()
+  } catch (e: any) {
+    ElMessage.error(e.message || '重启失败')
+  } finally {
+    setActionLoading(row, 'restart', false)
+  }
 }
 
 async function handleStop(row: any) {
-  await ElMessageBox.confirm(`确认停止 ${row.name} 上的 frps？`, '确认停止')
-  await stopServer(row.id)
-  ElMessage.success('停止指令已发送')
-  row.status = 'stopped'
+  try {
+    await ElMessageBox.confirm(`确认停止 ${row.name} 上的 frps？`, '确认停止')
+  } catch {
+    return
+  }
+  setActionLoading(row, 'stop', true)
+  try {
+    await stopServer(row.id)
+    ElMessage.success('停止成功')
+    row.status = 'stopped'
+    await fetchData()
+  } catch (e: any) {
+    ElMessage.error(e.message || '停止失败')
+  } finally {
+    setActionLoading(row, 'stop', false)
+  }
 }
 </script>
 
 <style scoped>
 /* page-header and page-title are defined in design-system.css */
+.action-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.action-btns :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
 </style>

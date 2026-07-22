@@ -25,6 +25,10 @@ type Server struct {
 	Token             string         `gorm:"size:255" json:"-"`
 	PluginSecret      string         `gorm:"size:64" json:"-"`
 	PluginAuthEnabled bool           `gorm:"default:false" json:"plugin_auth_enabled"`
+	PluginWebhookAddr string         `gorm:"size:255" json:"-"`
+	PluginWebhookPath string         `gorm:"size:255" json:"-"`
+	PluginAuthStatus  string         `gorm:"-" json:"plugin_auth_status,omitempty"`
+	PluginAuthMessage string         `gorm:"-" json:"plugin_auth_message,omitempty"`
 	Region            string         `gorm:"size:64" json:"region"`
 	Status            string         `gorm:"size:20;default:pending;not null" json:"status"` // pending, installing, running, stopped, error
 	AgentInstalled    bool           `gorm:"default:false" json:"agent_installed"`

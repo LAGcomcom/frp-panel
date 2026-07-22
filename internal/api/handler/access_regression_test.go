@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/frp-panel/frp-panel/internal/model"
 	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
+	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/gin-gonic/gin"
 	sqlite "github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -179,6 +181,40 @@ func TestFrpcConfigContainsOnlyEnabledProxies(t *testing.T) {
 	}
 	if bytes.Contains([]byte(payload.Data.Config), []byte("disabled-proxy")) {
 		t.Fatal("disabled proxy was included in generated config")
+	}
+}
+
+func TestFrpcConfigRejectsStalePluginEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAccessRegressionDB(t, "frpc-stale-plugin-endpoint")
+	server := model.Server{
+		Name: "stale-node", IP: "127.0.0.1", BindPort: 7000, Status: "running",
+		PluginAuthEnabled: true, PluginSecret: "plugin-secret",
+	}
+	user := model.User{Email: "stale@example.com", Password: "x", InviteCode: "stale", APIKey: "stale-key", Status: "active"}
+	if err := db.Create(&server).Error; err != nil {
+		t.Fatal(err)
+	}
+	server.PluginWebhookAddr = "https://old-panel.example.com"
+	server.PluginWebhookPath = fmt.Sprintf("/api/plugin/webhook/%d/%s", server.ID, server.PluginSecret)
+	if err := db.Model(&server).Updates(map[string]interface{}{"plugin_webhook_addr": server.PluginWebhookAddr, "plugin_webhook_path": server.PluginWebhookPath}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	proxy := model.Proxy{UserID: user.ID, ServerID: server.ID, Name: "stale-proxy", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 60022, Enabled: true}
+	if err := db.Create(&proxy).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("user_id", user.ID); c.Next() })
+	router.GET("/config/:server_id", NewProxyHandler(db, deployer.New(db, "https://new-panel.example.com/api/plugin/webhook", "", 8080)).GetFrpcConfig)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/config/"+fmt.Sprint(server.ID), nil))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "面板访问地址已变化") {
+		t.Fatalf("stale endpoint status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

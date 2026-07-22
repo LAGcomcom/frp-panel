@@ -31,9 +31,9 @@ func SetupRouter(db *gorm.DB, jwtManager *jwt.JWTManager, deployer *deployer.Dep
 
 	// Handlers
 	userHandler := handler.NewUserHandler(db, jwtManager)
-	userGroupHandler := handler.NewUserGroupHandler(db)
+	userGroupHandler := handler.NewUserGroupHandler(db, deployer)
 	serverHandler := handler.NewServerHandler(db, deployer, serverToken)
-	proxyHandler := handler.NewProxyHandler(db)
+	proxyHandler := handler.NewProxyHandler(db, deployer)
 	planHandler := handler.NewPlanHandler(db)
 	orderHandler := handler.NewOrderHandler(db)
 	dashboardHandler := handler.NewDashboardHandler(db)

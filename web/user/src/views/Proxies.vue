@@ -64,7 +64,7 @@
             <el-button
               size="small"
               :loading="loadingConfigServerIds.includes(Number(row.server?.id))"
-              :disabled="!row.enabled"
+              :disabled="!row.enabled || !serverConfigReady(row.server)"
               @click="copyProxyConfig(row)"
             >
               <el-icon><CopyDocument /></el-icon>{{ getCachedConfig(row) ? '复制配置' : '生成配置' }}
@@ -205,7 +205,7 @@ const apiResponseExample = `{
 const configServers = computed(() => {
   const servers = new Map<number, any>()
   for (const proxy of proxies.value) {
-	if (proxy.enabled && proxy.server?.id) servers.set(proxy.server.id, proxy.server)
+	if (proxy.enabled && proxy.server?.id && serverConfigReady(proxy.server)) servers.set(proxy.server.id, proxy.server)
   }
   return Array.from(servers.values())
 })
@@ -240,7 +240,8 @@ async function loadServerConfig(serverId: number, force = false): Promise<string
 	const config = res.data.config || ''
 	configCache.value = { ...configCache.value, [serverId]: config }
 	return config
-  } catch {
+  } catch (e: any) {
+	ElMessage.warning(e.response?.data?.message || '该节点暂时无法生成配置')
 	return ''
   } finally {
 	loadingConfigServerIds.value = loadingConfigServerIds.value.filter(id => id !== serverId)
@@ -348,6 +349,10 @@ async function copyApiText(text: string, label: string) {
 }
 
 async function copyProxyConfig(row: any) {
+  if (!serverConfigReady(row.server)) {
+	ElMessage.warning(serverConfigMessage(row.server))
+	return
+  }
   const serverId = Number(row.server?.id)
   let config = getCachedConfig(row)
   if (!config) {
@@ -355,7 +360,7 @@ async function copyProxyConfig(row: any) {
 	if (config) {
 	  ElMessage.info('配置已生成，请再次点击复制')
 	} else {
-	  ElMessage.error('配置生成失败，请稍后重试')
+	  ElMessage.error('配置生成失败，请按提示检查节点状态')
 	}
 	return
   }
@@ -364,6 +369,16 @@ async function copyProxyConfig(row: any) {
 	return
   }
   ElMessage.success('FRPC 配置已复制，包含该节点的全部已启用代理')
+}
+
+function serverConfigReady(server: any): boolean {
+  if (!server) return false
+  if (server.plugin_auth_status) return server.plugin_auth_status === 'ready'
+  return !!server.plugin_auth_enabled
+}
+
+function serverConfigMessage(server: any): string {
+  return server?.plugin_auth_message || '该节点需要由管理员重新部署后才能生成安全配置'
 }
 
 function getCachedConfig(row: any): string {

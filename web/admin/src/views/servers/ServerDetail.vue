@@ -9,11 +9,11 @@
         {{ statusMap[server.status] || server.status }}
       </el-tag>
       <div class="header-actions">
-        <el-button size="small" @click="handleDeploy" :disabled="server.status === 'installing'">
+        <el-button size="small" @click="handleDeploy" :loading="deployLoading" :disabled="server.status === 'installing'">
           {{ server.status === 'pending' ? '部署' : '重装' }}
         </el-button>
-        <el-button size="small" @click="handleRestart" :disabled="server.status !== 'running'">重启</el-button>
-        <el-button size="small" @click="handleStop" :disabled="server.status !== 'running'">停止</el-button>
+        <el-button size="small" @click="handleRestart" :loading="restartLoading" :disabled="server.status !== 'running'">重启</el-button>
+        <el-button size="small" @click="handleStop" :loading="stopLoading" :disabled="server.status !== 'running'">停止</el-button>
         <el-button size="small" v-if="server.status === 'running' && !server.agent_installed" @click="handleInstallAgent">
           安装监控
         </el-button>
@@ -212,6 +212,9 @@ const logLines = ref(200)
 const showClients = ref(false)
 const clients = ref<any[]>([])
 const clientsLoading = ref(false)
+const deployLoading = ref(false)
+const restartLoading = ref(false)
+const stopLoading = ref(false)
 
 const statusMap: Record<string, string> = {
   pending: '待部署', installing: '安装中', running: '运行中', stopped: '已停止', error: '异常',
@@ -227,7 +230,9 @@ const diskPercent = computed(() => {
   return Math.round((metrics.value.disk_usage / metrics.value.disk_total) * 100)
 })
 
-onMounted(async () => {
+onMounted(loadDetail)
+
+async function loadDetail() {
   loading.value = true
   try {
     const id = route.params.id
@@ -240,12 +245,15 @@ onMounted(async () => {
 
     if (server.value.agent_installed) {
       fetchMetrics()
-      metricsTimer = setInterval(fetchMetrics, 5000)
+      if (!metricsTimer) metricsTimer = setInterval(fetchMetrics, 5000)
+    } else if (metricsTimer) {
+      clearInterval(metricsTimer)
+      metricsTimer = null
     }
   } finally {
     loading.value = false
   }
-})
+}
 
 onUnmounted(() => {
   if (metricsTimer) clearInterval(metricsTimer)
@@ -290,23 +298,59 @@ async function handleInstallAgent() {
 }
 
 async function handleDeploy() {
-  await ElMessageBox.confirm(`确认在 ${server.value.name} (${server.value.ip}) 上部署 frps？`, '确认部署')
-  await deployServer(server.value.id)
-  ElMessage.success('部署任务已提交')
-  server.value.status = 'installing'
+  try {
+    await ElMessageBox.confirm(`确认在 ${server.value.name} (${server.value.ip}) 上部署 frps？`, '确认部署')
+  } catch {
+    return
+  }
+  deployLoading.value = true
+  try {
+    await deployServer(server.value.id)
+    ElMessage.success('部署任务已提交，请稍后刷新查看状态')
+    server.value.status = 'installing'
+    setTimeout(loadDetail, 1200)
+  } catch (e: any) {
+    ElMessage.error(e.message || '部署任务提交失败')
+  } finally {
+    deployLoading.value = false
+  }
 }
 
 async function handleRestart() {
-  await ElMessageBox.confirm(`确认重启 ${server.value.name} 上的 frps？`, '确认重启')
-  await restartServer(server.value.id)
-  ElMessage.success('重启指令已发送')
+  try {
+    await ElMessageBox.confirm(`确认重启 ${server.value.name} 上的 frps？`, '确认重启')
+  } catch {
+    return
+  }
+  restartLoading.value = true
+  try {
+    await restartServer(server.value.id)
+    ElMessage.success('重启成功')
+    await loadDetail()
+  } catch (e: any) {
+    ElMessage.error(e.message || '重启失败')
+  } finally {
+    restartLoading.value = false
+  }
 }
 
 async function handleStop() {
-  await ElMessageBox.confirm(`确认停止 ${server.value.name} 上的 frps？`, '确认停止')
-  await stopServer(server.value.id)
-  ElMessage.success('停止指令已发送')
-  server.value.status = 'stopped'
+  try {
+    await ElMessageBox.confirm(`确认停止 ${server.value.name} 上的 frps？`, '确认停止')
+  } catch {
+    return
+  }
+  stopLoading.value = true
+  try {
+    await stopServer(server.value.id)
+    ElMessage.success('停止成功')
+    server.value.status = 'stopped'
+    await loadDetail()
+  } catch (e: any) {
+    ElMessage.error(e.message || '停止失败')
+  } finally {
+    stopLoading.value = false
+  }
 }
 
 async function handleDelete() {

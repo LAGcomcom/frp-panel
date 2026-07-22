@@ -3,6 +3,8 @@ package deployer
 import (
 	"strings"
 	"testing"
+
+	"github.com/frp-panel/frp-panel/internal/model"
 )
 
 func TestBuildDownloadURLs(t *testing.T) {
@@ -27,11 +29,16 @@ func TestBuildPluginEndpointUsesNodeSpecificSecretPath(t *testing.T) {
 	}
 }
 
-func TestBuildPluginEndpointRequiresTLSForPublicHosts(t *testing.T) {
-	if _, _, err := buildPluginEndpoint("http://panel.example.com/api/plugin/webhook", 1, "secret"); err == nil {
-		t.Fatal("public HTTP webhook was accepted")
+func TestBuildPluginEndpointAcceptsPanelHTTPForDirectIPDeployments(t *testing.T) {
+	addr, path, err := buildPluginEndpoint("http://38.76.190.234:8080/api/plugin/webhook", 1, "secret")
+	if err != nil {
+		t.Fatal(err)
 	}
-	addr, _, err := buildPluginEndpoint("http://127.0.0.1:8080/api/plugin/webhook", 1, "secret")
+	if addr != "http://38.76.190.234:8080" || path != "/api/plugin/webhook/1/secret" {
+		t.Fatalf("public HTTP webhook = %q %q", addr, path)
+	}
+
+	addr, _, err = buildPluginEndpoint("http://127.0.0.1:8080/api/plugin/webhook", 1, "secret")
 	if err != nil || addr != "http://127.0.0.1:8080" {
 		t.Fatalf("loopback HTTP webhook = %q err=%v", addr, err)
 	}
@@ -41,6 +48,25 @@ func TestBuildPluginEndpointRequiresTLSForPublicHosts(t *testing.T) {
 	}
 	if !strings.Contains(frpsTomlTemplate, "tlsVerify = true") {
 		t.Fatal("FRPS plugin TLS certificate verification is not enabled")
+	}
+}
+
+func TestPluginEndpointMatchesDetectsChangedPanelAddress(t *testing.T) {
+	server := model.Server{ID: 7, PluginSecret: "plugin-secret", PluginAuthEnabled: true}
+	deployerA := New(nil, "https://panel-a.example.com/api/plugin/webhook", "", 8080)
+	addr, path, err := deployerA.ExpectedPluginEndpoint("", &server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.PluginWebhookAddr = addr
+	server.PluginWebhookPath = path
+	if ok, reason := deployerA.PluginEndpointMatches("", &server); !ok {
+		t.Fatalf("matching endpoint rejected: %s", reason)
+	}
+
+	deployerB := New(nil, "https://panel-b.example.com/api/plugin/webhook", "", 8080)
+	if ok, reason := deployerB.PluginEndpointMatches("", &server); ok || !strings.Contains(reason, "面板访问地址已变化") {
+		t.Fatalf("changed endpoint not detected: ok=%v reason=%q", ok, reason)
 	}
 }
 

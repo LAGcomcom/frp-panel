@@ -11,6 +11,7 @@ import (
 	"github.com/frp-panel/frp-panel/internal/model"
 	"github.com/frp-panel/frp-panel/internal/pkg/accesscontrol"
 	"github.com/frp-panel/frp-panel/internal/pkg/frpconfig"
+	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -57,11 +58,38 @@ func validateRemotePort(db *gorm.DB, serverID uint, port int, excludeProxyID uin
 }
 
 type ProxyHandler struct {
-	db *gorm.DB
+	db       *gorm.DB
+	deployer *deployer.Deployer
 }
 
-func NewProxyHandler(db *gorm.DB) *ProxyHandler {
-	return &ProxyHandler{db: db}
+func NewProxyHandler(db *gorm.DB, deployers ...*deployer.Deployer) *ProxyHandler {
+	var d *deployer.Deployer
+	if len(deployers) > 0 {
+		d = deployers[0]
+	}
+	return &ProxyHandler{db: db, deployer: d}
+}
+
+func (h *ProxyHandler) serverPluginReady(server *model.Server) (bool, string) {
+	if h.deployer == nil {
+		if server.PluginAuthEnabled {
+			server.PluginAuthStatus = "ready"
+			server.PluginAuthMessage = "安全模式"
+			return true, ""
+		}
+		server.PluginAuthStatus = "redeploy_required"
+		server.PluginAuthMessage = "该节点需要由管理员重新部署后才能生成安全配置"
+		return false, server.PluginAuthMessage
+	}
+	ok, reason := h.deployer.PluginEndpointMatches("", server)
+	if ok {
+		server.PluginAuthStatus = "ready"
+		server.PluginAuthMessage = "安全模式"
+		return true, ""
+	}
+	server.PluginAuthStatus = "redeploy_required"
+	server.PluginAuthMessage = reason
+	return false, reason
 }
 
 type clientConfigAuth struct {
@@ -126,7 +154,11 @@ func (h *ProxyHandler) GetClientConfigsByAPIKey(c *gin.Context) {
 	serverOrder := make([]uint, 0)
 	for _, proxy := range proxies {
 		server := proxy.Server
-		if server.ID == 0 || server.Status != "running" || !server.PluginAuthEnabled {
+		if server.ID == 0 || server.Status != "running" {
+			continue
+		}
+		ready, _ := h.serverPluginReady(&server)
+		if !ready {
 			continue
 		}
 		if _, exists := grouped[server.ID]; !exists {
@@ -366,6 +398,11 @@ func (h *ProxyHandler) ListProxies(c *gin.Context) {
 
 	offset := (parseInt(page) - 1) * parseInt(size)
 	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("Server").Find(&proxies)
+	for i := range proxies {
+		if proxies[i].Server.ID != 0 {
+			h.serverPluginReady(&proxies[i].Server)
+		}
+	}
 
 	response.Page(c, proxies, total, parseInt(page), parseInt(size))
 }
@@ -538,8 +575,8 @@ func (h *ProxyHandler) GetFrpcConfig(c *gin.Context) {
 		}
 		return
 	}
-	if !server.PluginAuthEnabled {
-		response.BadRequest(c, "该节点需要由管理员重新部署后才能生成安全配置")
+	if ok, reason := h.serverPluginReady(&server); !ok {
+		response.BadRequest(c, reason)
 		return
 	}
 

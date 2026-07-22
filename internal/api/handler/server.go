@@ -31,6 +31,31 @@ func NewServerHandler(db *gorm.DB, d *deployer.Deployer, serverToken string) *Se
 	return &ServerHandler{db: db, deployer: d, serverToken: serverToken}
 }
 
+func (h *ServerHandler) markServerPluginStatus(server *model.Server) {
+	if h.deployer == nil {
+		if server.PluginAuthEnabled {
+			server.PluginAuthStatus = "ready"
+			server.PluginAuthMessage = "安全模式"
+		} else {
+			server.PluginAuthStatus = "redeploy_required"
+			server.PluginAuthMessage = "需重新部署"
+		}
+		return
+	}
+	if ok, reason := h.deployer.PluginEndpointMatches("", server); ok {
+		server.PluginAuthStatus = "ready"
+		server.PluginAuthMessage = "安全模式"
+	} else {
+		server.PluginAuthStatus = "redeploy_required"
+		server.PluginAuthMessage = reason
+	}
+}
+
+func (h *ServerHandler) serverPluginReady(server *model.Server) bool {
+	h.markServerPluginStatus(server)
+	return server.PluginAuthStatus == "ready"
+}
+
 type CreateServerRequest struct {
 	Name          string `json:"name" binding:"required"`
 	IP            string `json:"ip" binding:"required"`
@@ -130,6 +155,7 @@ func (h *ServerHandler) ListServers(c *gin.Context) {
 
 	// Mask sensitive fields
 	for i := range servers {
+		h.markServerPluginStatus(&servers[i])
 		servers[i].Token = "***"
 		servers[i].PluginSecret = "***"
 		servers[i].SSHPassword = ""
@@ -159,6 +185,13 @@ func (h *ServerHandler) ListAvailableServers(c *gin.Context) {
 			Select("server_id").Where("user_group_id = ?", *user.GroupID))
 	}
 	query.Order("id asc").Find(&servers)
+	filteredServers := servers[:0]
+	for i := range servers {
+		if h.serverPluginReady(&servers[i]) {
+			filteredServers = append(filteredServers, servers[i])
+		}
+	}
+	servers = filteredServers
 
 	type ServerMetrics struct {
 		CPUUsage    float64 `json:"cpu_usage"`
@@ -321,6 +354,7 @@ func (h *ServerHandler) GetServer(c *gin.Context) {
 	}
 
 	// Mask sensitive fields
+	h.markServerPluginStatus(&server)
 	server.SSHPassword = ""
 	server.SSHPrivateKey = ""
 

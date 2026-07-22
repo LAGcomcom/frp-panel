@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -582,6 +581,8 @@ func (d *Deployer) Deploy(server *model.Server, panelAddr string) error {
 		"token":               nodeToken,
 		"plugin_secret":       pluginSecret,
 		"plugin_auth_enabled": true,
+		"plugin_webhook_addr": pluginAddr,
+		"plugin_webhook_path": pluginPath,
 	})
 
 	// Step 9: Install agent for metrics reporting
@@ -608,9 +609,6 @@ func buildPluginEndpoint(rawURL string, serverID uint, pluginSecret string) (str
 	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", "", fmt.Errorf("invalid webhook URL")
 	}
-	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
-		return "", "", fmt.Errorf("public webhook URL must use HTTPS")
-	}
 	basePath := strings.TrimRight(u.EscapedPath(), "/")
 	if basePath == "" {
 		basePath = "/api/plugin/webhook"
@@ -619,12 +617,34 @@ func buildPluginEndpoint(rawURL string, serverID uint, pluginSecret string) (str
 	return u.Scheme + "://" + u.Host, path, nil
 }
 
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
+func (d *Deployer) ExpectedPluginEndpoint(panelAddr string, server *model.Server) (string, string, error) {
+	if server.PluginSecret == "" {
+		return "", "", fmt.Errorf("node plugin secret is missing")
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if strings.TrimSpace(panelAddr) == "" {
+		panelAddr = d.pluginWebhookURL
+	}
+	if strings.TrimSpace(panelAddr) == "" {
+		panelAddr = fmt.Sprintf("http://localhost:%d", d.panelPort)
+	}
+	return buildPluginEndpoint(panelAddr, server.ID, server.PluginSecret)
+}
+
+func (d *Deployer) PluginEndpointMatches(panelAddr string, server *model.Server) (bool, string) {
+	if !server.PluginAuthEnabled {
+		return false, "该节点需要由管理员重新部署后才能生成安全配置"
+	}
+	expectedAddr, expectedPath, err := d.ExpectedPluginEndpoint(panelAddr, server)
+	if err != nil {
+		return false, "该节点安全配置不完整，请在后台重新部署节点"
+	}
+	if server.PluginWebhookAddr == "" || server.PluginWebhookPath == "" {
+		return false, "该节点部署记录缺少插件端点，请在后台重新部署节点"
+	}
+	if server.PluginWebhookAddr != expectedAddr || server.PluginWebhookPath != expectedPath {
+		return false, "面板访问地址已变化，请在后台重新部署该节点"
+	}
+	return true, ""
 }
 
 func (d *Deployer) installAgent(server *model.Server, client *sshpool.Client) error {

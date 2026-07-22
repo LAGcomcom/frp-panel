@@ -6,16 +6,44 @@ import (
 
 	"github.com/frp-panel/frp-panel/internal/api/response"
 	"github.com/frp-panel/frp-panel/internal/model"
+	"github.com/frp-panel/frp-panel/internal/service/deployer"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type UserGroupHandler struct {
-	db *gorm.DB
+	db       *gorm.DB
+	deployer *deployer.Deployer
 }
 
-func NewUserGroupHandler(db *gorm.DB) *UserGroupHandler {
-	return &UserGroupHandler{db: db}
+func NewUserGroupHandler(db *gorm.DB, deployers ...*deployer.Deployer) *UserGroupHandler {
+	var d *deployer.Deployer
+	if len(deployers) > 0 {
+		d = deployers[0]
+	}
+	return &UserGroupHandler{db: db, deployer: d}
+}
+
+func (h *UserGroupHandler) serverReady(server *model.Server) (bool, string) {
+	if h.deployer == nil {
+		if server.PluginAuthEnabled {
+			server.PluginAuthStatus = "ready"
+			server.PluginAuthMessage = "安全模式"
+			return true, ""
+		}
+		server.PluginAuthStatus = "redeploy_required"
+		server.PluginAuthMessage = "节点尚未启用安全鉴权，请先重新部署该节点"
+		return false, server.PluginAuthMessage
+	}
+	ok, reason := h.deployer.PluginEndpointMatches("", server)
+	if ok {
+		server.PluginAuthStatus = "ready"
+		server.PluginAuthMessage = "安全模式"
+		return true, ""
+	}
+	server.PluginAuthStatus = "redeploy_required"
+	server.PluginAuthMessage = reason
+	return false, reason
 }
 
 type userGroupRequest struct {
@@ -29,6 +57,11 @@ func (h *UserGroupHandler) List(c *gin.Context) {
 	if err := h.db.Preload("Servers").Order("id asc").Find(&groups).Error; err != nil {
 		response.InternalError(c, "failed to list user groups")
 		return
+	}
+	for groupIndex := range groups {
+		for serverIndex := range groups[groupIndex].Servers {
+			h.serverReady(&groups[groupIndex].Servers[serverIndex])
+		}
 	}
 	response.Success(c, groups)
 }
@@ -45,7 +78,7 @@ func (h *UserGroupHandler) Create(c *gin.Context) {
 		if err := tx.Create(&group).Error; err != nil {
 			return err
 		}
-		return replaceGroupServers(tx, &group, req.ServerIDs)
+		return h.replaceGroupServers(tx, &group, req.ServerIDs)
 	}); err != nil {
 		response.BadRequest(c, friendlyGroupError(err))
 		return
@@ -72,7 +105,7 @@ func (h *UserGroupHandler) Update(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
-		return replaceGroupServers(tx, &group, req.ServerIDs)
+		return h.replaceGroupServers(tx, &group, req.ServerIDs)
 	}); err != nil {
 		response.BadRequest(c, friendlyGroupError(err))
 		return
@@ -106,7 +139,7 @@ func (h *UserGroupHandler) Delete(c *gin.Context) {
 	response.SuccessWithMessage(c, "用户组已删除", nil)
 }
 
-func replaceGroupServers(tx *gorm.DB, group *model.UserGroup, serverIDs []uint) error {
+func (h *UserGroupHandler) replaceGroupServers(tx *gorm.DB, group *model.UserGroup, serverIDs []uint) error {
 	servers := make([]model.Server, 0, len(serverIDs))
 	if len(serverIDs) > 0 {
 		if err := tx.Where("id IN ?", serverIDs).Find(&servers).Error; err != nil {
@@ -116,8 +149,8 @@ func replaceGroupServers(tx *gorm.DB, group *model.UserGroup, serverIDs []uint) 
 			return fmt.Errorf("包含不存在的节点")
 		}
 		for _, server := range servers {
-			if !server.PluginAuthEnabled {
-				return fmt.Errorf("节点 %s 尚未启用安全鉴权，请先重新部署该节点", server.Name)
+			if ok, reason := h.serverReady(&server); !ok {
+				return fmt.Errorf("节点 %s 不可加入用户组：%s", server.Name, reason)
 			}
 		}
 	}

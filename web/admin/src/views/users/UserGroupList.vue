@@ -46,9 +46,9 @@
             <el-option
               v-for="server in servers"
               :key="server.id"
-              :label="server.plugin_auth_enabled ? server.name : `${server.name}（需重新部署）`"
+              :label="serverReady(server) ? server.name : `${server.name}（需重新部署）`"
               :value="server.id"
-              :disabled="!server.plugin_auth_enabled"
+              :disabled="!serverReady(server)"
             />
           </el-select>
           <div class="form-help">旧节点重新部署后才能加入用户组，避免节点权限被绕过。</div>
@@ -76,6 +76,11 @@ const editing = ref<any>(null)
 const form = reactive({ name: '', description: '', server_ids: [] as number[] })
 
 onMounted(loadData)
+
+function serverReady(server: any) {
+  if (server.plugin_auth_status) return server.plugin_auth_status === 'ready'
+  return !!server.plugin_auth_enabled
+}
 
 async function loadData() {
   loading.value = true
