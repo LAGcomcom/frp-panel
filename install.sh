@@ -313,9 +313,20 @@ else
 fi
 
 ASSET="frp-panel-linux-$ARCH"
-download "$RELEASE_BASE/$ASSET" "$TMP_DIR/$ASSET"
-download "$RELEASE_BASE/checksums.txt" "$TMP_DIR/checksums.txt"
-download "$RELEASE_BASE/version.txt" "$TMP_DIR/version.txt"
+SCRIPT_DIR=""
+if [ -f "$0" ]; then
+  SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" 2>/dev/null && pwd || true)
+fi
+LOCAL_RELEASE_DIR="$SCRIPT_DIR/release"
+if [ "$MODE" = "install" ] && [ -z "${FRP_PANEL_VERSION:-}" ] && [ -n "$SCRIPT_DIR" ] && [ -f "$LOCAL_RELEASE_DIR/$ASSET" ] && [ -f "$LOCAL_RELEASE_DIR/checksums.txt" ] && [ -f "$LOCAL_RELEASE_DIR/version.txt" ]; then
+  cp "$LOCAL_RELEASE_DIR/$ASSET" "$TMP_DIR/$ASSET"
+  cp "$LOCAL_RELEASE_DIR/checksums.txt" "$TMP_DIR/checksums.txt"
+  cp "$LOCAL_RELEASE_DIR/version.txt" "$TMP_DIR/version.txt"
+else
+  download "$RELEASE_BASE/$ASSET" "$TMP_DIR/$ASSET"
+  download "$RELEASE_BASE/checksums.txt" "$TMP_DIR/checksums.txt"
+  download "$RELEASE_BASE/version.txt" "$TMP_DIR/version.txt"
+fi
 
 expected=$(awk -v file="$ASSET" '$2 == file || $2 == "*" file { print $1; exit }' "$TMP_DIR/checksums.txt")
 [ -n "$expected" ] || { printf '%s %s\n' "$(text checksum_missing)" "$ASSET" >&2; exit 1; }

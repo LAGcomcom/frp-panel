@@ -118,13 +118,18 @@ func (h *ServerHandler) CreateServer(c *gin.Context) {
 func (h *ServerHandler) ListServers(c *gin.Context) {
 	page := c.DefaultQuery("page", "1")
 	size := c.DefaultQuery("size", "20")
-	status := c.DefaultQuery("status", "")
-	region := c.DefaultQuery("region", "")
+	status := strings.TrimSpace(c.Query("status"))
+	region := strings.TrimSpace(c.Query("region"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
 
 	var servers []model.Server
 	var total int64
 
 	query := h.db.Model(&model.Server{})
+	if keyword != "" {
+		pattern := "%" + keyword + "%"
+		query = query.Where("(name LIKE ? OR ip LIKE ? OR region LIKE ? OR frp_version LIKE ?)", pattern, pattern, pattern, pattern)
+	}
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -132,10 +137,16 @@ func (h *ServerHandler) ListServers(c *gin.Context) {
 		query = query.Where("region = ?", region)
 	}
 
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		response.InternalError(c, "服务器列表加载失败，请稍后重试")
+		return
+	}
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Find(&servers)
+	if err := query.Offset(offset).Limit(parseInt(size)).Order("id desc").Find(&servers).Error; err != nil {
+		response.InternalError(c, "服务器列表加载失败，请稍后重试")
+		return
+	}
 
 	latencyLimit := make(chan struct{}, 8)
 	var latencyWG sync.WaitGroup

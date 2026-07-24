@@ -611,4 +611,39 @@ async function handleChangePassword() {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   overflow-wrap: anywhere;
 }
+
+@media (max-width: 760px) {
+  .sidebar,
+  .sidebar.collapsed {
+    width: var(--sidebar-collapsed);
+  }
+
+  .sidebar-title,
+  .nav-group-label,
+  .nav-label,
+  .sidebar-user .user-info,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .sidebar-header,
+  .nav-item,
+  .sidebar-user .user-btn {
+    justify-content: center;
+  }
+
+  .sidebar-header,
+  .nav-item {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .topbar {
+    padding: 0 var(--space-3);
+  }
+
+  .content-inner {
+    padding: var(--space-3);
+  }
+}
 </style>

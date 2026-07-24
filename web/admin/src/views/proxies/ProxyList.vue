@@ -3,6 +3,35 @@
     <template #header>
       <div class="page-header">
         <span class="page-title">代理管理</span>
+        <div class="proxy-filters">
+          <el-input
+            v-model="keyword"
+            class="proxy-search"
+            placeholder="搜索代理、用户、节点或域名"
+            clearable
+            prefix-icon="Search"
+            @keyup.enter="applyFilters"
+            @clear="applyFilters"
+          />
+          <el-select v-model="typeFilter" class="proxy-filter" placeholder="全部类型" clearable @change="applyFilters">
+            <el-option label="TCP" value="tcp" />
+            <el-option label="UDP" value="udp" />
+            <el-option label="HTTP" value="http" />
+            <el-option label="HTTPS" value="https" />
+            <el-option label="STCP" value="stcp" />
+            <el-option label="XTCP" value="xtcp" />
+          </el-select>
+          <el-select v-model="statusFilter" class="proxy-filter" placeholder="连接状态" clearable @change="applyFilters">
+            <el-option label="已连接" value="running" />
+            <el-option label="未连接" value="pending" />
+            <el-option label="已停止" value="stopped" />
+            <el-option label="异常" value="error" />
+          </el-select>
+          <el-select v-model="enabledFilter" class="proxy-filter" placeholder="启用状态" clearable @change="applyFilters">
+            <el-option label="已启用" value="true" />
+            <el-option label="已禁用" value="false" />
+          </el-select>
+        </div>
       </div>
     </template>
 
@@ -67,18 +96,37 @@ const loading = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+const keyword = ref('')
+const typeFilter = ref('')
+const statusFilter = ref('')
+const enabledFilter = ref('')
+let fetchSequence = 0
 
 onMounted(() => fetchData())
 
 async function fetchData() {
+  const requestID = ++fetchSequence
   loading.value = true
   try {
-    const res = await getProxies({ page: page.value, size: pageSize.value })
+    const res = await getProxies({
+      page: page.value,
+      size: pageSize.value,
+      keyword: keyword.value.trim() || undefined,
+      type: typeFilter.value || undefined,
+      status: statusFilter.value || undefined,
+      enabled: enabledFilter.value || undefined,
+    })
+    if (requestID !== fetchSequence) return
     proxies.value = res.data.list
     total.value = res.data.total
   } finally {
-    loading.value = false
+    if (requestID === fetchSequence) loading.value = false
   }
+}
+
+function applyFilters() {
+  page.value = 1
+  fetchData()
 }
 
 async function handleEnable(row: any) {
@@ -127,5 +175,37 @@ function formatBytes(bytes: number): string {
 /* page-header and page-title are defined in design-system.css */
 .action-btns :deep(.el-button + .el-button) {
   margin-left: 0;
+}
+
+.page-header {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.proxy-filters {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.proxy-search {
+  width: 260px;
+}
+
+.proxy-filter {
+  width: 120px;
+}
+
+@media (max-width: 760px) {
+  .proxy-filters {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .proxy-search {
+    width: min(100%, 260px);
+  }
 }
 </style>

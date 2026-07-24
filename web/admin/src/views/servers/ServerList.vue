@@ -4,6 +4,32 @@
       <template #header>
         <div class="page-header">
           <span class="page-title">服务器列表</span>
+          <div class="server-filters">
+            <el-input
+              v-model="keyword"
+              class="server-search"
+              placeholder="搜索名称、IP、地区或版本"
+              clearable
+              prefix-icon="Search"
+              @keyup.enter="applyFilters"
+              @clear="applyFilters"
+            />
+            <el-select v-model="statusFilter" class="server-filter" placeholder="全部状态" clearable @change="applyFilters">
+              <el-option label="待部署" value="pending" />
+              <el-option label="安装中" value="installing" />
+              <el-option label="运行中" value="running" />
+              <el-option label="已停止" value="stopped" />
+              <el-option label="异常" value="error" />
+            </el-select>
+            <el-input
+              v-model="regionFilter"
+              class="server-filter"
+              placeholder="地区"
+              clearable
+              @keyup.enter="applyFilters"
+              @clear="applyFilters"
+            />
+          </div>
           <el-button type="primary" @click="showAdd = true">
             <el-icon><Plus /></el-icon>添加服务器
           </el-button>
@@ -121,6 +147,10 @@ const total = ref(0)
 const showAdd = ref(false)
 const addLoading = ref(false)
 const runningActions = ref<Record<string, boolean>>({})
+const keyword = ref('')
+const statusFilter = ref('')
+const regionFilter = ref('')
+let fetchSequence = 0
 
 const statusMap: Record<string, string> = {
   pending: '待部署', installing: '安装中', running: '运行中', stopped: '已停止', error: '异常',
@@ -160,14 +190,27 @@ const addForm = reactive({
 onMounted(() => fetchData())
 
 async function fetchData() {
+  const requestID = ++fetchSequence
   loading.value = true
   try {
-    const res = await getServers({ page: page.value, size: pageSize.value })
+    const res = await getServers({
+      page: page.value,
+      size: pageSize.value,
+      keyword: keyword.value.trim() || undefined,
+      status: statusFilter.value || undefined,
+      region: regionFilter.value.trim() || undefined,
+    })
+    if (requestID !== fetchSequence) return
     servers.value = res.data.list
     total.value = res.data.total
   } finally {
-    loading.value = false
+    if (requestID === fetchSequence) loading.value = false
   }
+}
+
+function applyFilters() {
+  page.value = 1
+  fetchData()
 }
 
 async function handleAdd() {
@@ -250,5 +293,39 @@ async function handleStop(row: any) {
 
 .action-btns :deep(.el-button + .el-button) {
   margin-left: 0;
+}
+
+.page-header {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.server-filters {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.server-search {
+  width: 260px;
+}
+
+.server-filter {
+  width: 130px;
+}
+
+@media (max-width: 760px) {
+  .server-filters {
+    order: 3;
+    width: 100%;
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .server-search {
+    width: min(100%, 260px);
+  }
 }
 </style>

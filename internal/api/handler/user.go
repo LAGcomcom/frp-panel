@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/smtp"
+	"strings"
 	"sync"
 	"time"
 
@@ -499,24 +500,43 @@ func (h *UserHandler) GetAPIKey(c *gin.Context) {
 func (h *UserHandler) ListUsers(c *gin.Context) {
 	page := c.DefaultQuery("page", "1")
 	size := c.DefaultQuery("size", "20")
-	keyword := c.DefaultQuery("keyword", "")
-	status := c.DefaultQuery("status", "")
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	status := strings.TrimSpace(c.Query("status"))
+	role := strings.TrimSpace(c.Query("role"))
+	groupID := strings.TrimSpace(c.Query("group_id"))
 
 	var users []model.User
 	var total int64
 
 	query := h.db.Model(&model.User{})
 	if keyword != "" {
-		query = query.Where("email LIKE ?", "%"+keyword+"%")
+		pattern := "%" + keyword + "%"
+		query = query.Where("(email LIKE ? OR invite_code LIKE ? OR api_key LIKE ?)", pattern, pattern, pattern)
 	}
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
+	if role != "" {
+		query = query.Where("role = ?", role)
+	}
+	if groupID != "" {
+		if groupID == "none" {
+			query = query.Where("group_id IS NULL")
+		} else {
+			query = query.Where("group_id = ?", groupID)
+		}
+	}
 
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		response.InternalError(c, "用户列表加载失败，请稍后重试")
+		return
+	}
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("Plan").Preload("Group").Find(&users)
+	if err := query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("Plan").Preload("Group").Find(&users).Error; err != nil {
+		response.InternalError(c, "用户列表加载失败，请稍后重试")
+		return
+	}
 
 	response.Page(c, users, total, parseInt(page), parseInt(size))
 }

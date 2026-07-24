@@ -117,6 +117,76 @@ func TestAdminUpdateCannotBypassBalanceOrStatusWorkflows(t *testing.T) {
 	}
 }
 
+func TestAdminUserListSupportsOperationalFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "admin-user-filters")
+	paidGroup := model.UserGroup{Name: "paid-filter-group"}
+	if err := db.Create(&paidGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+	admin := model.User{Email: "filter-admin@example.com", Password: "x", InviteCode: "filter-admin", APIKey: "filter-admin-key", Role: "admin", Status: "active"}
+	activeUser := model.User{Email: "filter-user@example.com", Password: "x", InviteCode: "invite-filter-user", APIKey: "filter-user-key", Role: "user", Status: "active", GroupID: &paidGroup.ID}
+	bannedUser := model.User{Email: "banned-filter@example.com", Password: "x", InviteCode: "invite-banned", APIKey: "banned-filter-key", Role: "user", Status: "banned"}
+	for _, user := range []*model.User{&admin, &activeUser, &bannedUser} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	router := gin.New()
+	router.GET("/users", NewUserHandler(db, nil).ListUsers)
+
+	tests := []struct {
+		name   string
+		query  string
+		wantID uint
+	}{
+		{name: "email keyword", query: "keyword=filter-admin@example.com", wantID: admin.ID},
+		{name: "invite keyword", query: "keyword=invite-filter-user", wantID: activeUser.ID},
+		{name: "api key keyword", query: "keyword=banned-filter-key", wantID: bannedUser.ID},
+		{name: "role and status", query: "role=admin&status=active", wantID: admin.ID},
+		{name: "group filter", query: "group_id=" + fmt.Sprint(paidGroup.ID), wantID: activeUser.ID},
+		{name: "ungrouped and banned", query: "group_id=none&status=banned", wantID: bannedUser.ID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := performJSONRequest(router, http.MethodGet, "/users?"+tt.query, nil)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var payload struct {
+				Data struct {
+					List  []model.User `json:"list"`
+					Total int64        `json:"total"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Data.Total != 1 || len(payload.Data.List) != 1 || payload.Data.List[0].ID != tt.wantID {
+				t.Fatalf("filtered users=%+v total=%d want id=%d", payload.Data.List, payload.Data.Total, tt.wantID)
+			}
+		})
+	}
+
+	pageTwo := performJSONRequest(router, http.MethodGet, "/users?role=user&page=2&size=1", nil)
+	if pageTwo.Code != http.StatusOK {
+		t.Fatalf("page two status=%d body=%s", pageTwo.Code, pageTwo.Body.String())
+	}
+	var pagedPayload struct {
+		Data struct {
+			List  []model.User `json:"list"`
+			Total int64        `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(pageTwo.Body.Bytes(), &pagedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if pagedPayload.Data.Total != 2 || len(pagedPayload.Data.List) != 1 || pagedPayload.Data.List[0].ID != activeUser.ID {
+		t.Fatalf("page two users=%+v total=%d want id=%d", pagedPayload.Data.List, pagedPayload.Data.Total, activeUser.ID)
+	}
+}
+
 func TestExternalRefundDoesNotCreditBalanceOrChangeOrder(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openAdminHardeningDB(t, "refund-safety")
@@ -364,6 +434,79 @@ func TestUserOrderResponsesHideAdminAuditFields(t *testing.T) {
 	}
 }
 
+func TestAdminOrderListSupportsOperationalFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "admin-order-filters")
+	alice := model.User{Email: "alice-filter@example.com", Password: "x", InviteCode: "alice-filter", APIKey: "alice-filter-key", Role: "user", Status: "active"}
+	bob := model.User{Email: "bob-filter@example.com", Password: "x", InviteCode: "bob-filter", APIKey: "bob-filter-key", Role: "user", Status: "active"}
+	for _, user := range []*model.User{&alice, &bob} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	orders := []model.Order{
+		{UserID: alice.ID, OrderNo: "ORD-ALPHA-FILTER", OrderType: "plan", Amount: 10, DurationType: "monthly", PayMethod: "balance", PayStatus: "paid", Remark: "manual-note-alpha", OperatorEmail: "operator-alpha@example.com"},
+		{UserID: bob.ID, OrderNo: "RCH-BETA-FILTER", OrderType: "recharge", Amount: 20, DurationType: "recharge", PayMethod: "admin", PayStatus: "refunded", Remark: "manual-note-beta", OperatorEmail: "operator-beta@example.com"},
+		{UserID: alice.ID, OrderNo: "RCH-GAMMA-FILTER", OrderType: "recharge", Amount: 30, DurationType: "recharge", PayMethod: "admin", PayStatus: "paid", Remark: "manual-note-gamma", OperatorEmail: "operator-gamma@example.com"},
+	}
+	if err := db.Create(&orders).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("role", "super_admin"); c.Next() })
+	router.GET("/orders", NewOrderHandler(db).AdminListOrders)
+
+	tests := []struct {
+		name   string
+		query  string
+		wantID uint
+	}{
+		{name: "order number", query: "keyword=ALPHA-FILTER", wantID: orders[0].ID},
+		{name: "user email with filters", query: "keyword=bob-filter@example.com&status=refunded&order_type=recharge", wantID: orders[1].ID},
+		{name: "accounting remark", query: "keyword=manual-note-beta", wantID: orders[1].ID},
+		{name: "audit details", query: "keyword=operator-alpha@example.com", wantID: orders[0].ID},
+		{name: "status and type", query: "status=refunded&order_type=recharge", wantID: orders[1].ID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := performJSONRequest(router, http.MethodGet, "/orders?"+tt.query, nil)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var payload struct {
+				Data struct {
+					List  []model.Order `json:"list"`
+					Total int64         `json:"total"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Data.Total != 1 || len(payload.Data.List) != 1 || payload.Data.List[0].ID != tt.wantID {
+				t.Fatalf("filtered orders=%+v total=%d want id=%d", payload.Data.List, payload.Data.Total, tt.wantID)
+			}
+		})
+	}
+
+	pageTwo := performJSONRequest(router, http.MethodGet, "/orders?keyword=alice-filter@example.com&page=2&size=1", nil)
+	if pageTwo.Code != http.StatusOK {
+		t.Fatalf("page two status=%d body=%s", pageTwo.Code, pageTwo.Body.String())
+	}
+	var pagedPayload struct {
+		Data struct {
+			List  []model.Order `json:"list"`
+			Total int64         `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(pageTwo.Body.Bytes(), &pagedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if pagedPayload.Data.Total != 2 || len(pagedPayload.Data.List) != 1 || pagedPayload.Data.List[0].ID != orders[0].ID {
+		t.Fatalf("page two orders=%+v total=%d want id=%d", pagedPayload.Data.List, pagedPayload.Data.Total, orders[0].ID)
+	}
+}
+
 func TestQueuedRefundRejectsCouponAndReferralWithoutMutation(t *testing.T) {
 	for _, scenario := range []string{"coupon", "referral"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -549,6 +692,80 @@ func TestAdminCannotMutateAdministratorOwnedProxy(t *testing.T) {
 	}
 	if err := db.First(&proxy, proxy.ID).Error; err != nil || !proxy.Enabled {
 		t.Fatalf("protected proxy changed: enabled=%v err=%v", proxy.Enabled, err)
+	}
+}
+
+func TestAdminProxyListSupportsOperationalFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "admin-proxy-filters")
+	alice := model.User{Email: "alice-proxy@example.com", Password: "x", InviteCode: "alice-proxy", APIKey: "alice-proxy-key", Role: "user", Status: "active"}
+	bob := model.User{Email: "bob-proxy@example.com", Password: "x", InviteCode: "bob-proxy", APIKey: "bob-proxy-key", Role: "user", Status: "active"}
+	edge := model.Server{Name: "edge-hk", IP: "10.0.0.10", Region: "HK", Status: "running"}
+	backup := model.Server{Name: "backup-us", IP: "10.0.1.20", Region: "US", Status: "running"}
+	for _, value := range []any{&alice, &bob, &edge, &backup} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	proxies := []model.Proxy{
+		{UserID: alice.ID, ServerID: edge.ID, Name: "rdp-alpha", Type: "tcp", LocalIP: "127.0.0.1", LocalPort: 3389, RemotePort: 60001, Status: "running", Enabled: true, RemoteAddr: "10.0.0.10:60001"},
+		{UserID: bob.ID, ServerID: backup.ID, Name: "site-beta", Type: "http", LocalIP: "127.0.0.1", LocalPort: 8080, Status: "pending", Enabled: false, Subdomain: "beta", CustomDomains: `["beta.example.com"]`},
+		{UserID: alice.ID, ServerID: backup.ID, Name: "api-gamma", Type: "https", LocalIP: "127.0.0.1", LocalPort: 8443, Status: "error", Enabled: true, CustomDomains: `["api.example.com"]`},
+	}
+	if err := db.Create(&proxies).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.GET("/proxies", NewProxyHandler(db).AdminListProxies)
+
+	tests := []struct {
+		name   string
+		query  string
+		wantID uint
+	}{
+		{name: "proxy name", query: "keyword=rdp-alpha", wantID: proxies[0].ID},
+		{name: "user email with enabled", query: "keyword=bob-proxy@example.com&enabled=false", wantID: proxies[1].ID},
+		{name: "server name and type", query: "keyword=edge-hk&type=tcp", wantID: proxies[0].ID},
+		{name: "domain and status", query: "keyword=api.example.com&status=error", wantID: proxies[2].ID},
+		{name: "type status and enabled", query: "type=http&status=pending&enabled=false", wantID: proxies[1].ID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := performJSONRequest(router, http.MethodGet, "/proxies?"+tt.query, nil)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var payload struct {
+				Data struct {
+					List  []model.Proxy `json:"list"`
+					Total int64         `json:"total"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Data.Total != 1 || len(payload.Data.List) != 1 || payload.Data.List[0].ID != tt.wantID {
+				t.Fatalf("filtered proxies=%+v total=%d want id=%d", payload.Data.List, payload.Data.Total, tt.wantID)
+			}
+		})
+	}
+
+	pageTwo := performJSONRequest(router, http.MethodGet, "/proxies?keyword=alice-proxy@example.com&page=2&size=1", nil)
+	if pageTwo.Code != http.StatusOK {
+		t.Fatalf("page two status=%d body=%s", pageTwo.Code, pageTwo.Body.String())
+	}
+	var pagedPayload struct {
+		Data struct {
+			List  []model.Proxy `json:"list"`
+			Total int64         `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(pageTwo.Body.Bytes(), &pagedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if pagedPayload.Data.Total != 2 || len(pagedPayload.Data.List) != 1 || pagedPayload.Data.List[0].ID != proxies[0].ID {
+		t.Fatalf("page two proxies=%+v total=%d want id=%d", pagedPayload.Data.List, pagedPayload.Data.Total, proxies[0].ID)
 	}
 }
 
@@ -1032,6 +1249,70 @@ func TestServerUpdateAcceptsZeroMaxUsersAndRejectsUnboundedLogs(t *testing.T) {
 	logs := performJSONRequest(router, http.MethodGet, "/servers/"+fmt.Sprint(server.ID)+"/logs?lines=2001", nil)
 	if logs.Code != http.StatusBadRequest {
 		t.Fatalf("unbounded logs status=%d body=%s", logs.Code, logs.Body.String())
+	}
+}
+
+func TestAdminServerListSupportsOperationalFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openAdminHardeningDB(t, "admin-server-filters")
+	servers := []model.Server{
+		{Name: "alpha-node", IP: "10.0.0.10", Region: "HK", FrpVersion: "0.68.0", Status: "stopped", BindPort: 7000},
+		{Name: "beta-node", IP: "10.0.1.20", Region: "US", FrpVersion: "0.61.1", Status: "error", BindPort: 7000},
+		{Name: "gamma-node", IP: "172.16.0.30", Region: "HK", FrpVersion: "0.68.0", Status: "pending", BindPort: 7000},
+	}
+	if err := db.Create(&servers).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.GET("/servers", NewServerHandler(db, nil, "").ListServers)
+
+	tests := []struct {
+		name   string
+		query  string
+		wantID uint
+	}{
+		{name: "name keyword", query: "keyword=alpha", wantID: servers[0].ID},
+		{name: "ip keyword", query: "keyword=10.0.1.20", wantID: servers[1].ID},
+		{name: "version and status", query: "keyword=0.61.1&status=error", wantID: servers[1].ID},
+		{name: "region and status", query: "region=HK&status=pending", wantID: servers[2].ID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := performJSONRequest(router, http.MethodGet, "/servers?"+tt.query, nil)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var payload struct {
+				Data struct {
+					List  []model.Server `json:"list"`
+					Total int64          `json:"total"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Data.Total != 1 || len(payload.Data.List) != 1 || payload.Data.List[0].ID != tt.wantID {
+				t.Fatalf("filtered servers=%+v total=%d want id=%d", payload.Data.List, payload.Data.Total, tt.wantID)
+			}
+		})
+	}
+
+	pageTwo := performJSONRequest(router, http.MethodGet, "/servers?keyword=0.68.0&page=2&size=1", nil)
+	if pageTwo.Code != http.StatusOK {
+		t.Fatalf("page two status=%d body=%s", pageTwo.Code, pageTwo.Body.String())
+	}
+	var pagedPayload struct {
+		Data struct {
+			List  []model.Server `json:"list"`
+			Total int64          `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(pageTwo.Body.Bytes(), &pagedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if pagedPayload.Data.Total != 2 || len(pagedPayload.Data.List) != 1 || pagedPayload.Data.List[0].ID != servers[0].ID {
+		t.Fatalf("page two servers=%+v total=%d want id=%d", pagedPayload.Data.List, pagedPayload.Data.Total, servers[0].ID)
 	}
 }
 

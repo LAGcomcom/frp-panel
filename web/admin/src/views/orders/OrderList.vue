@@ -3,6 +3,27 @@
     <template #header>
       <div class="page-header">
         <span class="page-title">订单管理</span>
+        <div class="order-filters">
+          <el-input
+            v-model="keyword"
+            class="order-search"
+            placeholder="搜索订单号、用户或账务说明"
+            clearable
+            prefix-icon="Search"
+            @keyup.enter="applyFilters"
+            @clear="applyFilters"
+          />
+          <el-select v-model="statusFilter" class="order-filter" placeholder="全部状态" clearable @change="applyFilters">
+            <el-option label="待支付" value="pending" />
+            <el-option label="已支付" value="paid" />
+            <el-option label="已退款" value="refunded" />
+            <el-option label="已过期" value="expired" />
+          </el-select>
+          <el-select v-model="typeFilter" class="order-filter" placeholder="全部类型" clearable @change="applyFilters">
+            <el-option label="套餐订单" value="plan" />
+            <el-option label="余额充值" value="recharge" />
+          </el-select>
+        </div>
       </div>
     </template>
 
@@ -82,6 +103,10 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const refundingOrderId = ref<number | null>(null)
+const keyword = ref('')
+const statusFilter = ref('')
+const typeFilter = ref('')
+let fetchSequence = 0
 
 const durationMap: Record<string, string> = { monthly: '月付', quarterly: '季付', yearly: '年付', recharge: '充值' }
 const methodMap: Record<string, string> = { balance: '余额', alipay: '支付宝', wechat: '微信', admin: '管理员' }
@@ -90,14 +115,27 @@ const statusMap: Record<string, string> = { paid: '已支付', refunded: '已退
 onMounted(() => fetchData())
 
 async function fetchData() {
+  const requestID = ++fetchSequence
   loading.value = true
   try {
-    const res = await getOrders({ page: page.value, size: pageSize.value })
+    const res = await getOrders({
+      page: page.value,
+      size: pageSize.value,
+      keyword: keyword.value.trim() || undefined,
+      status: statusFilter.value || undefined,
+      order_type: typeFilter.value || undefined,
+    })
+    if (requestID !== fetchSequence) return
     orders.value = res.data.list
     total.value = res.data.total
   } finally {
-    loading.value = false
+    if (requestID === fetchSequence) loading.value = false
   }
+}
+
+function applyFilters() {
+  page.value = 1
+  fetchData()
 }
 
 function canRefund(order: any): boolean {
@@ -140,5 +178,30 @@ async function handleRefund(order: any) {
   margin-top: 2px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+.page-header {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.order-filters {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.order-search {
+  width: 280px;
+}
+.order-filter {
+  width: 120px;
+}
+@media (max-width: 760px) {
+  .order-filters {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .order-search {
+    width: min(100%, 280px);
+  }
 }
 </style>

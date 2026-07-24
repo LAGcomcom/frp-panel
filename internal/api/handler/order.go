@@ -484,24 +484,35 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 func (h *OrderHandler) AdminListOrders(c *gin.Context) {
 	page := c.DefaultQuery("page", "1")
 	size := c.DefaultQuery("size", "20")
-	userID := c.DefaultQuery("user_id", "")
-	status := c.DefaultQuery("status", "")
+	userID := strings.TrimSpace(c.Query("user_id"))
+	status := strings.TrimSpace(c.Query("status"))
+	orderType := strings.TrimSpace(c.Query("order_type"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
 
 	var orders []model.Order
 	var total int64
 
 	query := h.db.Model(&model.Order{})
+	if keyword != "" {
+		pattern := "%" + keyword + "%"
+		query = query.
+			Joins("LEFT JOIN users AS order_user_search ON order_user_search.id = orders.user_id").
+			Where("(orders.order_no LIKE ? OR order_user_search.email LIKE ? OR orders.remark LIKE ? OR orders.operator_email LIKE ?)", pattern, pattern, pattern, pattern)
+	}
 	if userID != "" {
-		query = query.Where("user_id = ?", userID)
+		query = query.Where("orders.user_id = ?", userID)
 	}
 	if status != "" {
-		query = query.Where("pay_status = ?", status)
+		query = query.Where("orders.pay_status = ?", status)
+	}
+	if orderType != "" {
+		query = query.Where("orders.order_type = ?", orderType)
 	}
 
 	query.Count(&total)
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	result := query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("User").Preload("Plan").Preload("Entitlement").Find(&orders)
+	result := query.Select("orders.*").Offset(offset).Limit(parseInt(size)).Order("orders.id desc").Preload("User").Preload("Plan").Preload("Entitlement").Find(&orders)
 	if result.Error != nil {
 		response.InternalError(c, "订单列表加载失败，请稍后重试")
 		return

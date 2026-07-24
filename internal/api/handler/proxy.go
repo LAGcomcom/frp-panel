@@ -622,32 +622,58 @@ func (h *ProxyHandler) GetFrpcConfig(c *gin.Context) {
 func (h *ProxyHandler) AdminListProxies(c *gin.Context) {
 	page := c.DefaultQuery("page", "1")
 	size := c.DefaultQuery("size", "20")
-	serverID := c.DefaultQuery("server_id", "")
-	userID := c.DefaultQuery("user_id", "")
-	proxyType := c.DefaultQuery("type", "")
-	status := c.DefaultQuery("status", "")
+	serverID := strings.TrimSpace(c.Query("server_id"))
+	userID := strings.TrimSpace(c.Query("user_id"))
+	proxyType := strings.TrimSpace(c.Query("type"))
+	status := strings.TrimSpace(c.Query("status"))
+	enabled := strings.TrimSpace(c.Query("enabled"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
 
 	var proxies []model.Proxy
 	var total int64
 
 	query := h.db.Model(&model.Proxy{})
+	if keyword != "" {
+		pattern := "%" + keyword + "%"
+		query = query.
+			Joins("LEFT JOIN users AS proxy_user_search ON proxy_user_search.id = proxies.user_id").
+			Joins("LEFT JOIN servers AS proxy_server_search ON proxy_server_search.id = proxies.server_id").
+			Where(`(
+				proxies.name LIKE ? OR proxy_user_search.email LIKE ? OR proxy_server_search.name LIKE ? OR
+				proxies.remote_addr LIKE ? OR proxies.subdomain LIKE ? OR proxies.custom_domains LIKE ?
+			)`, pattern, pattern, pattern, pattern, pattern, pattern)
+	}
 	if serverID != "" {
-		query = query.Where("server_id = ?", serverID)
+		query = query.Where("proxies.server_id = ?", serverID)
 	}
 	if userID != "" {
-		query = query.Where("user_id = ?", userID)
+		query = query.Where("proxies.user_id = ?", userID)
 	}
 	if proxyType != "" {
-		query = query.Where("type = ?", proxyType)
+		query = query.Where("proxies.type = ?", proxyType)
 	}
 	if status != "" {
-		query = query.Where("status = ?", status)
+		query = query.Where("proxies.status = ?", status)
+	}
+	if enabled != "" {
+		switch enabled {
+		case "true":
+			query = query.Where("proxies.enabled = ?", true)
+		case "false":
+			query = query.Where("proxies.enabled = ?", false)
+		}
 	}
 
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		response.InternalError(c, "代理列表加载失败，请稍后重试")
+		return
+	}
 
 	offset := (parseInt(page) - 1) * parseInt(size)
-	query.Offset(offset).Limit(parseInt(size)).Order("id desc").Preload("User").Preload("Server").Find(&proxies)
+	if err := query.Select("proxies.*").Offset(offset).Limit(parseInt(size)).Order("proxies.id desc").Preload("User").Preload("Server").Find(&proxies).Error; err != nil {
+		response.InternalError(c, "代理列表加载失败，请稍后重试")
+		return
+	}
 
 	response.Page(c, proxies, total, parseInt(page), parseInt(size))
 }
